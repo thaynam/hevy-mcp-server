@@ -1,0 +1,53 @@
+{
+  "name": "hevy-mcp-server",
+  "version": "3.1.0",
+  "description": "A Model Context Protocol (MCP) server for the Hevy fitness tracking API, deployed on Cloudflare Workers with Hono framework",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "hevy",
+    "fitness",
+    "cloudflare-workers",
+    "ai",
+    "claude"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tomtorggler/hevy-mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tomtorggler/hevy-mcp-server/issues"
+  },
+  "homepage": "https://github.com/tomtorggler/hevy-mcp-server#readme",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev --env dev --port 8787",
+    "format": "biome format --write",
+    "lint:fix": "biome lint --fix",
+    "start": "wrangler dev --env dev --port 8787",
+    "cf-typegen": "wrangler types",
+    "type-check": "tsc --noEmit",
+    "test": "vitest",
+    "test:watch": "vitest --watch",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest --coverage",
+    "test:run": "vitest run"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^0.0.11",
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "agents": "^0.5.0",
+    "hono": "^4.12.0",
+    "octokit": "^5.0.4",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.5",
+    "@cloudflare/workers-types": "^4.20251011.0",
+    "@types/node": "^24.10.13",
+    "@vitest/ui": "^3.2.4",
+    "typescript": "5.9.3",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.45.0"
+  }
+}
