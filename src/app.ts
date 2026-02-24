@@ -5,6 +5,7 @@ import githubHandler from "./github-handler.js";
 import { createMcpRoutes } from "./routes/mcp.js";
 import utilityRoutes from "./routes/utility.js";
 import { mcpHandlers } from "./mcp-handlers.js";
+import { CORS_HEADERS } from "./lib/cors.js";
 
 // Environment interface for OAuth multi-user support
 interface Env {
@@ -30,21 +31,16 @@ app.use("*", async (c, next) => {
 	if (c.req.method === "OPTIONS") {
 		return new Response(null, {
 			status: 204,
-			headers: {
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-				"Access-Control-Allow-Headers": "Content-Type, Authorization",
-				"Access-Control-Max-Age": "86400",
-			},
+			headers: { ...CORS_HEADERS },
 		});
 	}
 
 	await next();
 
 	// Add CORS headers to all responses
-	c.res.headers.set("Access-Control-Allow-Origin", "*");
-	c.res.headers.set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-	c.res.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+	c.res.headers.set("Access-Control-Allow-Origin", CORS_HEADERS["Access-Control-Allow-Origin"]);
+	c.res.headers.set("Access-Control-Allow-Methods", CORS_HEADERS["Access-Control-Allow-Methods"]);
+	c.res.headers.set("Access-Control-Allow-Headers", CORS_HEADERS["Access-Control-Allow-Headers"]);
 	
 	// Add security headers
 	c.res.headers.set("X-Content-Type-Options", "nosniff");

@@ -12,6 +12,7 @@ export interface McpToolResponse {
 		text: string;
 	}>;
 	isError?: boolean;
+	errorCategory?: "hevy_api_error" | "validation_error" | "authentication_error" | "unknown_error";
 }
 
 /**
@@ -157,6 +158,7 @@ export function formatHevyApiError(error: HevyApiError): McpToolResponse {
 			},
 		],
 		isError: true,
+		errorCategory: "hevy_api_error",
 	};
 }
 
@@ -225,6 +227,7 @@ export function formatValidationError(error: ZodError): McpToolResponse {
 			},
 		],
 		isError: true,
+		errorCategory: "validation_error",
 	};
 }
 
@@ -326,6 +329,7 @@ export function formatValidationErrorMessage(error: ValidationError): McpToolRes
 			},
 		],
 		isError: true,
+		errorCategory: "validation_error",
 	};
 }
 
@@ -370,6 +374,7 @@ export function handleError(error: unknown): McpToolResponse {
 				},
 			],
 			isError: true,
+			errorCategory: "unknown_error",
 		};
 	}
 
@@ -382,6 +387,7 @@ export function handleError(error: unknown): McpToolResponse {
 			},
 		],
 		isError: true,
+		errorCategory: "unknown_error",
 	};
 }
 

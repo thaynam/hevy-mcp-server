@@ -25,6 +25,7 @@ import {
 } from "./lib/key-storage.js";
 import { HevyClient } from "./lib/client.js";
 import { constantTimeEqual, isValidLength } from "./lib/crypto-utils.js";
+import { CORS_HEADERS } from "./lib/cors.js";
 
 // Zod schemas for input validation
 const SaveKeyBodySchema = z.object({ apiKey: z.string().min(1).max(500) });
@@ -205,21 +206,16 @@ app.use("*", async (c, next) => {
 	if (c.req.method === "OPTIONS") {
 		return new Response(null, {
 			status: 204,
-			headers: {
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-				"Access-Control-Allow-Headers": "Content-Type, Authorization",
-				"Access-Control-Max-Age": "86400",
-			},
+			headers: { ...CORS_HEADERS },
 		});
 	}
 
 	await next();
 
 	// Add CORS headers to all responses
-	c.res.headers.set("Access-Control-Allow-Origin", "*");
-	c.res.headers.set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-	c.res.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+	c.res.headers.set("Access-Control-Allow-Origin", CORS_HEADERS["Access-Control-Allow-Origin"]);
+	c.res.headers.set("Access-Control-Allow-Methods", CORS_HEADERS["Access-Control-Allow-Methods"]);
+	c.res.headers.set("Access-Control-Allow-Headers", CORS_HEADERS["Access-Control-Allow-Headers"]);
 });
 
 /**
@@ -274,7 +270,7 @@ app.get("/.well-known/oauth-protected-resource", (c) => {
 		resource_documentation: `${baseUrl}/`,
 	});
 
-	response.headers.set("Access-Control-Allow-Origin", "*");
+	response.headers.set("Access-Control-Allow-Origin", CORS_HEADERS["Access-Control-Allow-Origin"]);
 	return response;
 });
 
@@ -300,7 +296,7 @@ app.get("/.well-known/oauth-authorization-server", (c) => {
 		service_documentation: `${baseUrl}/`,
 	});
 
-	response.headers.set("Access-Control-Allow-Origin", "*");
+	response.headers.set("Access-Control-Allow-Origin", CORS_HEADERS["Access-Control-Allow-Origin"]);
 	return response;
 });
 
