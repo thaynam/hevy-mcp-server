@@ -78,7 +78,7 @@ export class HevyClient {
     const response = await fetch(url, {
       method,
       headers,
-      body: body ? JSON.stringify(body) : undefined,
+      body: body ? JSON.stringify(body) : null,
     });
 
     // Parse the response
@@ -105,7 +105,7 @@ export class HevyClient {
     path: string,
     queryParams?: Record<string, string | number | boolean | undefined>
   ): Promise<T> {
-    return this.request<T>(path, { method: 'GET', queryParams });
+    return this.request<T>(path, { method: 'GET', ...(queryParams !== undefined ? { queryParams } : {}) });
   }
 
   /**
@@ -116,7 +116,7 @@ export class HevyClient {
     body?: unknown,
     queryParams?: Record<string, string | number | boolean | undefined>
   ): Promise<T> {
-    return this.request<T>(path, { method: 'POST', body, queryParams });
+    return this.request<T>(path, { method: 'POST', ...(body !== undefined ? { body } : {}), ...(queryParams !== undefined ? { queryParams } : {}) });
   }
 
   /**
@@ -127,7 +127,7 @@ export class HevyClient {
     body?: unknown,
     queryParams?: Record<string, string | number | boolean | undefined>
   ): Promise<T> {
-    return this.request<T>(path, { method: 'PUT', body, queryParams });
+    return this.request<T>(path, { method: 'PUT', ...(body !== undefined ? { body } : {}), ...(queryParams !== undefined ? { queryParams } : {}) });
   }
 
   // ============================================

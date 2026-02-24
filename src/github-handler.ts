@@ -396,8 +396,8 @@ app.get("/authorize", async (c) => {
 				redirectUri: normalizedRedirectUri,
 				state,
 				scope,
-				codeChallenge: codeChallenge || undefined,
-				codeChallengeMethod: codeChallengeMethod || undefined,
+				...(codeChallenge ? { codeChallenge } : {}),
+				...(codeChallengeMethod ? { codeChallengeMethod } : {}),
 				userLogin: username,
 				userName: (sessionData as { name?: string }).name || username,
 				authorizeEndpoint: "/authorize",
@@ -595,8 +595,8 @@ app.get("/callback", async (c) => {
 			redirectUri,
 			state: clientState,
 			scope,
-			codeChallenge: codeChallenge || undefined,
-			codeChallengeMethod: codeChallengeMethod || undefined,
+			...(codeChallenge ? { codeChallenge } : {}),
+			...(codeChallengeMethod ? { codeChallengeMethod } : {}),
 			userLogin: user.login,
 			userName: user.name,
 			authorizeEndpoint: "/authorize",
@@ -927,7 +927,7 @@ app.post("/logout", async (c) => {
 		do {
 			const listResult = await c.env.OAUTH_KV.list({
 				prefix: `session_access_token:${sessionToken}:`,
-				cursor,
+				...(cursor !== undefined ? { cursor } : {}),
 			});
 
 			for (const key of listResult.keys) {

@@ -246,14 +246,17 @@ export async function parseRedirectApproval(request: Request): Promise<{
 }> {
 	const formData = await request.formData();
 
+	const codeChallenge = (formData.get("code_challenge") as string) || undefined;
+	const codeChallengeMethod = (formData.get("code_challenge_method") as string) || undefined;
+
 	return {
 		approved: formData.get("approve") === "true",
 		clientId: formData.get("client_id") as string,
 		redirectUri: formData.get("redirect_uri") as string,
 		state: formData.get("state") as string,
 		scope: formData.get("scope") as string,
-		codeChallenge: (formData.get("code_challenge") as string) || undefined,
-		codeChallengeMethod: (formData.get("code_challenge_method") as string) || undefined,
+		...(codeChallenge ? { codeChallenge } : {}),
+		...(codeChallengeMethod ? { codeChallengeMethod } : {}),
 	};
 }
 

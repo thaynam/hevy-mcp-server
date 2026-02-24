@@ -13,8 +13,6 @@ interface Env {
 	GITHUB_CLIENT_ID: string;
 	GITHUB_CLIENT_SECRET: string;
 	COOKIE_ENCRYPTION_KEY: string;
-	// Legacy: HEVY_API_KEY is deprecated in favor of per-user keys in KV
-	HEVY_API_KEY?: string;
 }
 
 // Variables interface for Hono context

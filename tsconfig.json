@@ -13,6 +13,7 @@
 		"allowSyntheticDefaultImports": true,
 		"forceConsistentCasingInFileNames": true,
 		"strict": true,
+		"exactOptionalPropertyTypes": true,
 		"skipLibCheck": true,
 		"types": [
 			"./worker-configuration.d.ts",

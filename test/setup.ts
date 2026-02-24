@@ -40,8 +40,6 @@ export function mockFetchError(status: number, message: string, data?: any) {
 /**
  * Helper to create a mock environment object
  */
-export function createMockEnv(apiKey = 'test-api-key'): any {
-  return {
-    HEVY_API_KEY: apiKey,
-  };
+export function createMockEnv(): any {
+  return {};
 }
