@@ -8,6 +8,13 @@ const mockKV = {
 	delete: vi.fn(),
 };
 
+// Valid 64 hex-char access tokens (matching the BEARER_TOKEN_REGEX format)
+// These are two concatenated 32-hex-char generateState() outputs
+const VALID_TOKEN_A = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+const VALID_TOKEN_B = "deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234deadbeefcafe1234";
+const VALID_TOKEN_C = "0000000000000000000000000000000000000000000000000000000000000001";
+const VALID_TOKEN_D = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+
 describe("Bearer Auth Middleware", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -42,7 +49,7 @@ describe("Bearer Auth Middleware", () => {
 
 		const request = new Request("http://localhost/mcp", {
 			method: "POST",
-			headers: { "Authorization": "Bearer access-token-abc" },
+			headers: { "Authorization": `Bearer ${VALID_TOKEN_A}` },
 		});
 
 		const mockContext = createMockContext(request);
@@ -50,7 +57,7 @@ describe("Bearer Auth Middleware", () => {
 
 		await bearerAuth(mockContext as any, next);
 
-		expect(mockKV.get).toHaveBeenNthCalledWith(1, "access_token:access-token-abc", "json");
+		expect(mockKV.get).toHaveBeenNthCalledWith(1, `access_token:${VALID_TOKEN_A}`, "json");
 		expect(mockKV.get).toHaveBeenNthCalledWith(2, "session:session-123", "json");
 		expect(mockContext.set).toHaveBeenCalledWith("props", mockProps);
 		expect(next).toHaveBeenCalled();
@@ -84,7 +91,7 @@ describe("Bearer Auth Middleware", () => {
 
 		const request = new Request("http://localhost/mcp", {
 			method: "POST",
-			headers: { "Authorization": "Bearer invalid-token" },
+			headers: { "Authorization": `Bearer ${VALID_TOKEN_B}` },
 		});
 
 		const mockContext = createMockContext(request);
@@ -92,11 +99,34 @@ describe("Bearer Auth Middleware", () => {
 
 		await bearerAuth(mockContext as any, next);
 
-		expect(mockKV.get).toHaveBeenCalledWith("access_token:invalid-token", "json");
+		expect(mockKV.get).toHaveBeenCalledWith(`access_token:${VALID_TOKEN_B}`, "json");
 		expect(mockContext.json).toHaveBeenCalledWith(
 			{
 				error: "unauthorized",
 				message: "Invalid token.",
+			},
+			401
+		);
+		expect(next).not.toHaveBeenCalled();
+	});
+
+	it("should return 401 for token with invalid format (not 64 hex chars)", async () => {
+		const request = new Request("http://localhost/mcp", {
+			method: "POST",
+			headers: { "Authorization": "Bearer invalid-token-format" },
+		});
+
+		const mockContext = createMockContext(request);
+		const next = vi.fn();
+
+		await bearerAuth(mockContext as any, next);
+
+		// KV should NOT be queried for format-invalid tokens
+		expect(mockKV.get).not.toHaveBeenCalled();
+		expect(mockContext.json).toHaveBeenCalledWith(
+			{
+				error: "unauthorized",
+				message: "Invalid token format.",
 			},
 			401
 		);
@@ -113,7 +143,7 @@ describe("Bearer Auth Middleware", () => {
 
 		const request = new Request("http://localhost/mcp", {
 			method: "POST",
-			headers: { "Authorization": "Bearer token-without-session" },
+			headers: { "Authorization": `Bearer ${VALID_TOKEN_C}` },
 		});
 
 		const mockContext = createMockContext(request);
@@ -121,7 +151,7 @@ describe("Bearer Auth Middleware", () => {
 
 		await bearerAuth(mockContext as any, next);
 
-		expect(mockKV.get).toHaveBeenNthCalledWith(1, "access_token:token-without-session", "json");
+		expect(mockKV.get).toHaveBeenNthCalledWith(1, `access_token:${VALID_TOKEN_C}`, "json");
 		expect(mockKV.get).toHaveBeenNthCalledWith(2, "session:expired-session", "json");
 		expect(mockContext.json).toHaveBeenCalledWith(
 			{
@@ -144,7 +174,7 @@ describe("Bearer Auth Middleware", () => {
 
 		const request = new Request("http://localhost/mcp", {
 			method: "POST",
-			headers: { "Authorization": "Bearer test-token" },
+			headers: { "Authorization": `Bearer ${VALID_TOKEN_D}` },
 		});
 
 		const mockContext = createMockContext(request);

@@ -4,6 +4,7 @@
  */
 
 import { Hono } from "hono";
+import { z } from "zod";
 import {
 	getUpstreamAuthorizeUrl,
 	fetchUpstreamAuthToken,
@@ -24,6 +25,15 @@ import {
 } from "./lib/key-storage.js";
 import { HevyClient } from "./lib/client.js";
 import { constantTimeEqual, isValidLength } from "./lib/crypto-utils.js";
+
+// Zod schemas for input validation
+const SaveKeyBodySchema = z.object({ apiKey: z.string().min(1).max(500) });
+const TestKeyBodySchema = z.object({ apiKey: z.string().min(1).max(500) });
+const TokenGrantTypeSchema = z.string().min(1).max(100);
+const TokenCodeSchema = z.string().min(1).max(200);
+const TokenClientIdSchema = z.string().min(1).max(200);
+const TokenRedirectUriSchema = z.string().min(1).max(2000);
+const TokenCodeVerifierSchema = z.string().max(200).optional();
 
 interface Env {
 	OAUTH_KV: KVNamespace;
@@ -612,14 +622,40 @@ app.post("/token", async (c) => {
 		return rateLimitResponse;
 	}
 
+	let formData: FormData;
 	try {
-		const formData = await c.req.formData();
-		const grantType = formData.get("grant_type");
-		const code = formData.get("code");
-		const redirectUri = formData.get("redirect_uri");
-		const clientId = formData.get("client_id");
-		const codeVerifier = formData.get("code_verifier");
+		formData = await c.req.formData();
+	} catch {
+		return c.json(
+			{
+				error: "invalid_request",
+				error_description: "Request body must be valid form data.",
+			},
+			400
+		);
+	}
 
+	try {
+		const rawGrantType = formData.get("grant_type") ?? undefined;
+		const rawCode = formData.get("code") ?? undefined;
+		const rawRedirectUri = formData.get("redirect_uri") ?? undefined;
+		const rawClientId = formData.get("client_id") ?? undefined;
+		const rawCodeVerifier = formData.get("code_verifier") ?? undefined;
+
+		const grantTypeResult = TokenGrantTypeSchema.safeParse(rawGrantType);
+		if (!grantTypeResult.success) {
+			return c.json(
+				{
+					error: "invalid_request",
+					error_description: grantTypeResult.error.issues[0]?.message ?? "Invalid grant_type.",
+				},
+				400
+			);
+		}
+
+		const grantType = grantTypeResult.data;
+
+		// Check grant_type before validating other required fields
 		if (grantType !== "authorization_code") {
 			return c.json(
 				{
@@ -630,25 +666,25 @@ app.post("/token", async (c) => {
 			);
 		}
 
-		if (!code || !redirectUri || !clientId) {
+		const codeResult = TokenCodeSchema.safeParse(rawCode);
+		const redirectUriResult = TokenRedirectUriSchema.safeParse(rawRedirectUri);
+		const clientIdResult = TokenClientIdSchema.safeParse(rawClientId);
+		const codeVerifierResult = TokenCodeVerifierSchema.safeParse(rawCodeVerifier);
+
+		if (!codeResult.success || !redirectUriResult.success || !clientIdResult.success || !codeVerifierResult.success) {
 			return c.json(
 				{
 					error: "invalid_request",
-					error_description: "Missing required parameters: code, redirect_uri, or client_id",
+					error_description: "Missing or invalid required parameters: code, redirect_uri, or client_id",
 				},
 				400
 			);
 		}
 
-		if (typeof redirectUri !== "string") {
-			return c.json(
-				{
-					error: "invalid_request",
-					error_description: "redirect_uri must be a string",
-				},
-				400
-			);
-		}
+		const code = codeResult.data;
+		const redirectUri = redirectUriResult.data;
+		const clientId = clientIdResult.data;
+		const codeVerifier = codeVerifierResult.data;
 
 		const normalizedRedirectUri = normalizeRedirectUri(redirectUri);
 		if (!normalizedRedirectUri) {
@@ -1430,14 +1466,21 @@ app.post("/api/test-key", async (c) => {
 		return c.json({ error: "Invalid CSRF token" }, 403);
 	}
 
+	let body: unknown;
 	try {
-		const body = await c.req.json();
-		const apiKey = body.apiKey;
+		body = await c.req.json();
+	} catch {
+		return c.json({ error: "invalid_json", message: "Request body must be valid JSON." }, 400);
+	}
 
-		if (!apiKey || typeof apiKey !== "string") {
-			return c.json({ error: "Invalid request: apiKey is required" }, 400);
-		}
+	const parseResult = TestKeyBodySchema.safeParse(body);
+	if (!parseResult.success) {
+		return c.json({ error: "invalid_request", message: parseResult.error.issues[0]?.message ?? "Invalid request body." }, 400);
+	}
 
+	const { apiKey } = parseResult.data;
+
+	try {
 		// Test the API key by making a simple request
 		const client = new HevyClient({ apiKey });
 		await client.getWorkouts({ pageSize: 1 });
@@ -1471,14 +1514,21 @@ app.post("/api/save-key", async (c) => {
 		return c.json({ error: "Invalid CSRF token" }, 403);
 	}
 
+	let body: unknown;
 	try {
-		const body = await c.req.json();
-		const apiKey = body.apiKey;
+		body = await c.req.json();
+	} catch {
+		return c.json({ error: "invalid_json", message: "Request body must be valid JSON." }, 400);
+	}
 
-		if (!apiKey || typeof apiKey !== "string") {
-			return c.json({ error: "Invalid request: apiKey is required" }, 400);
-		}
+	const parseResult = SaveKeyBodySchema.safeParse(body);
+	if (!parseResult.success) {
+		return c.json({ error: "invalid_request", message: parseResult.error.issues[0]?.message ?? "Invalid request body." }, 400);
+	}
 
+	const { apiKey } = parseResult.data;
+
+	try {
 		// Validate the API key first
 		const client = new HevyClient({ apiKey });
 		await client.getWorkouts({ pageSize: 1 });

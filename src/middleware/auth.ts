@@ -1,6 +1,5 @@
 import { createMiddleware } from "hono/factory";
 import type { Props } from "../utils.js";
-import { constantTimeEqual, isValidLength } from "../lib/crypto-utils.js";
 
 interface Env {
 	OAUTH_KV: KVNamespace;
@@ -9,6 +8,10 @@ interface Env {
 interface Variables {
 	props: Props;
 }
+
+// Bearer token format: exactly 64 lowercase hex characters
+// (two concatenated generateState() outputs of 32 hex chars each)
+const BEARER_TOKEN_REGEX = /^[0-9a-f]{64}$/;
 
 /**
  * Bearer token authentication middleware
@@ -20,7 +23,7 @@ export const bearerAuth = createMiddleware<{ Bindings: Env; Variables: Variables
 
 		if (!authHeader || !authHeader.startsWith("Bearer ")) {
 			const wwwAuthenticateValue = `Bearer realm="${c.req.url}", error="invalid_token"`;
-			
+
 			return c.json(
 				{
 					error: "unauthorized",
@@ -34,12 +37,12 @@ export const bearerAuth = createMiddleware<{ Bindings: Env; Variables: Variables
 		}
 
 		const token = authHeader.substring(7); // Remove "Bearer " prefix
-		
-		// Validate token length to prevent DoS
-		if (!isValidLength(token, 1000)) {
+
+		// Pre-validate token format before KV lookup to reject obviously invalid tokens
+		if (!BEARER_TOKEN_REGEX.test(token)) {
 			return c.json({ error: "unauthorized", message: "Invalid token format." }, 401);
 		}
-		
+
 		const accessTokenData = await c.env.OAUTH_KV.get(`access_token:${token}`, "json");
 
 		if (
@@ -61,7 +64,7 @@ export const bearerAuth = createMiddleware<{ Bindings: Env; Variables: Variables
 
 		const sessionToken = (accessTokenData as { sessionToken: string; issued_at: string }).sessionToken;
 		const issuedAt = (accessTokenData as { sessionToken: string; issued_at: string }).issued_at;
-		
+
 		// Validate token hasn't exceeded max age (30 days)
 		const tokenAge = Date.now() - new Date(issuedAt).getTime();
 		const MAX_TOKEN_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -86,4 +89,3 @@ export const bearerAuth = createMiddleware<{ Bindings: Env; Variables: Variables
 		await next();
 	}
 );
-
