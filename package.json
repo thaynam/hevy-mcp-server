@@ -31,7 +31,9 @@
     "test:watch": "vitest --watch",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "test:workers": "vitest run --project workers",
+    "test:node": "vitest run --project node"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.0.11",
@@ -43,6 +45,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.2.5",
+    "@cloudflare/vitest-pool-workers": "^0.12.17",
     "@cloudflare/workers-types": "^4.20251011.0",
     "@types/node": "^24.10.13",
     "@vitest/ui": "^3.2.4",
