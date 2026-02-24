@@ -513,7 +513,20 @@ app.get("/callback", async (c) => {
 	// Retrieve OAuth state
 	const stateData = await c.env.OAUTH_KV.get(`oauth_state:${state}`, "json");
 	if (!stateData || typeof stateData !== "object") {
-		return c.text("Invalid or expired state parameter", 400);
+		return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Authorization Expired</title>
+  <style>body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; color: #333; } h1 { color: #c0392b; }</style>
+</head>
+<body>
+  <h1>Authorization Request Expired</h1>
+  <p>Your authorization request timed out after 10 minutes.</p>
+  <p><strong>To continue:</strong> return to your MCP client and restart the connection. If you are using Claude Desktop, disconnect and reconnect the server.</p>
+</body>
+</html>`, 400);
 	}
 
 	const { clientId, redirectUri, state: clientState, scope, codeChallenge, codeChallengeMethod } = stateData as {

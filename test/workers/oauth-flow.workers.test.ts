@@ -37,21 +37,24 @@ describe("STEST-04: GET /callback - missing or invalid parameters", () => {
   });
 
   it("returns 400 for state that was never stored (tampering / unknown state)", async () => {
-    // Characterization test: documents CURRENT behavior as of Phase 1.
+    // Characterization test: updated in Phase 2 (ERRH-01).
     // STEST-04: OAuth flow error paths.
-    // github-handler.ts line 504-507: KV lookup returns null -> 400 "Invalid or expired state parameter".
+    // github-handler.ts: KV lookup returns null -> 400 HTML "Authorization Expired" page.
+    // Updated from plain text to HTML error page in Phase 2 (ERRH-01).
     const response = await SELF.fetch("https://example.com/callback?code=abc&state=never-stored-state");
 
     expect(response.status).toBe(400);
     const text = await response.text();
-    expect(text).toContain("Invalid or expired state parameter");
+    expect(text).toContain("Authorization Expired");
+    expect(text).toContain("Authorization Request Expired");
   });
 
   it("returns 400 for expired state (deleted from KV to simulate TTL expiry)", async () => {
-    // Characterization test: documents CURRENT behavior as of Phase 1.
+    // Characterization test: updated in Phase 2 (ERRH-01).
     // STEST-04: OAuth flow error paths.
     // Pitfall P4: fake timers do NOT control KV TTL. Instead, delete the key to simulate expiry.
-    // github-handler.ts line 504-507: KV lookup returns null -> 400 "Invalid or expired state parameter".
+    // github-handler.ts: KV lookup returns null -> 400 HTML "Authorization Expired" page.
+    // Updated from plain text to HTML error page in Phase 2 (ERRH-01).
     const state = "test-expired-state";
     await env.OAUTH_KV.put(`oauth_state:${state}`, JSON.stringify({
       clientId: "test-client",
@@ -66,7 +69,8 @@ describe("STEST-04: GET /callback - missing or invalid parameters", () => {
 
     expect(response.status).toBe(400);
     const text = await response.text();
-    expect(text).toContain("Invalid or expired state parameter");
+    expect(text).toContain("Authorization Expired");
+    expect(text).toContain("Authorization Request Expired");
   });
 });
 

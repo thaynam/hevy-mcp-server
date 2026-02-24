@@ -19,12 +19,14 @@ export interface HevyClientConfig {
 export class HevyApiError extends Error {
   status: number;
   data?: any;
+  isRetryable: boolean;
 
   constructor(message: string, status: number, data?: any) {
     super(message);
     this.name = 'HevyApiError';
     this.status = status;
     this.data = data;
+    this.isRetryable = status === 0 || status >= 500;
   }
 }
 
