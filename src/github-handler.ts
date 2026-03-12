@@ -6,26 +6,26 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import {
-	getUpstreamAuthorizeUrl,
-	fetchUpstreamAuthToken,
-	fetchGitHubUser,
-	type Props,
+  getUpstreamAuthorizeUrl,
+  fetchUpstreamAuthToken,
+  fetchGitHubUser,
+  type Props,
 } from "./utils.js";
 import {
-	renderApprovalDialog,
-	parseRedirectApproval,
-	clientIdAlreadyApproved,
-	storeClientApproval,
+  renderApprovalDialog,
+  parseRedirectApproval,
+  clientIdAlreadyApproved,
+  storeClientApproval,
 } from "./workers-oauth-utils.js";
 import {
-	getUserApiKey,
-	setUserApiKey,
-	deleteUserApiKey,
-	maskApiKey,
+  getUserApiKey,
+  setUserApiKey,
+  deleteUserApiKey,
+  maskApiKey,
 } from "./lib/key-storage.js";
 import { HevyClient } from "./lib/client.js";
 import { constantTimeEqual, isValidLength } from "./lib/crypto-utils.js";
-import { CORS_HEADERS } from "./lib/cors.js";
+import { getCorsHeaders } from "./lib/cors.js";
 
 // Zod schemas for input validation
 const SaveKeyBodySchema = z.object({ apiKey: z.string().min(1).max(500) });
@@ -37,194 +37,236 @@ const TokenRedirectUriSchema = z.string().min(1).max(2000);
 const TokenCodeVerifierSchema = z.string().max(200).optional();
 
 interface Env {
-	OAUTH_KV: KVNamespace;
-	GITHUB_CLIENT_ID: string;
-	GITHUB_CLIENT_SECRET: string;
-	COOKIE_ENCRYPTION_KEY: string;
+  OAUTH_KV: KVNamespace;
+  GITHUB_CLIENT_ID: string;
+  GITHUB_CLIENT_SECRET: string;
+  COOKIE_ENCRYPTION_KEY: string;
+  ALLOWED_ORIGIN?: string;
 }
 
 // Create Hono app for OAuth routes
 const app = new Hono<{ Bindings: Env }>();
 
 function getRequestId(c: any): string {
-	return c.req.header("CF-Ray") || crypto.randomUUID();
+  return c.req.header("CF-Ray") || crypto.randomUUID();
 }
 
 function logError(c: any, message: string, error: unknown): string {
-	const requestId = getRequestId(c);
-	console.error(`[${requestId}] ${message}`, error);
-	return requestId;
+  const requestId = getRequestId(c);
+  console.error(`[${requestId}] ${message}`, error);
+  return requestId;
 }
 
 function escapeHtml(value: string): string {
-	return value
-		.replaceAll("&", "&amp;")
-		.replaceAll("<", "&lt;")
-		.replaceAll(">", "&gt;")
-		.replaceAll('"', "&quot;")
-		.replaceAll("'", "&#39;");
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function isLocalhostHostname(hostname: string): boolean {
-	return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  return (
+    hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1"
+  );
 }
 
 function normalizeRedirectUri(rawUri: string): string | null {
-	let parsed: URL;
+  let parsed: URL;
 
-	try {
-		parsed = new URL(rawUri);
-	} catch {
-		return null;
-	}
+  try {
+    parsed = new URL(rawUri);
+  } catch {
+    return null;
+  }
 
-	if (parsed.username || parsed.password) {
-		return null;
-	}
+  if (parsed.username || parsed.password) {
+    return null;
+  }
 
-	const isSecure = parsed.protocol === "https:";
-	const isLocalHttp = parsed.protocol === "http:" && isLocalhostHostname(parsed.hostname);
+  const isSecure = parsed.protocol === "https:";
+  const isLocalHttp =
+    parsed.protocol === "http:" && isLocalhostHostname(parsed.hostname);
 
-	if (!isSecure && !isLocalHttp) {
-		return null;
-	}
+  if (!isSecure && !isLocalHttp) {
+    return null;
+  }
 
-	parsed.hash = "";
-	return parsed.toString();
+  parsed.hash = "";
+  return parsed.toString();
 }
 
 function toBase64Url(bytes: Uint8Array): string {
-	return btoa(String.fromCharCode(...bytes))
-		.replaceAll("+", "-")
-		.replaceAll("/", "_")
-		.replaceAll("=", "");
+  return btoa(String.fromCharCode(...bytes))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
 }
 
 async function createS256CodeChallenge(codeVerifier: string): Promise<string> {
-	const encoded = new TextEncoder().encode(codeVerifier);
-	const digest = await crypto.subtle.digest("SHA-256", encoded);
-	return toBase64Url(new Uint8Array(digest));
+  const encoded = new TextEncoder().encode(codeVerifier);
+  const digest = await crypto.subtle.digest("SHA-256", encoded);
+  return toBase64Url(new Uint8Array(digest));
 }
 
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const CSRF_COOKIE_NAME = "__Host-csrf_token";
 
-function parseCookies(cookieHeader: string | undefined): Record<string, string> {
-	if (!cookieHeader) {
-		return {};
-	}
+function parseCookies(
+  cookieHeader: string | undefined,
+): Record<string, string> {
+  if (!cookieHeader) {
+    return {};
+  }
 
-	return cookieHeader
-		.split(";")
-		.map((part) => part.trim())
-		.filter(Boolean)
-		.reduce<Record<string, string>>((accumulator, entry) => {
-			const separatorIndex = entry.indexOf("=");
-			if (separatorIndex <= 0) {
-				return accumulator;
-			}
+  return cookieHeader
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce<Record<string, string>>((accumulator, entry) => {
+      const separatorIndex = entry.indexOf("=");
+      if (separatorIndex <= 0) {
+        return accumulator;
+      }
 
-			const key = entry.slice(0, separatorIndex);
-			const value = entry.slice(separatorIndex + 1);
-			accumulator[key] = value;
-			return accumulator;
-		}, {});
+      const key = entry.slice(0, separatorIndex);
+      const value = entry.slice(separatorIndex + 1);
+      accumulator[key] = value;
+      return accumulator;
+    }, {});
 }
 
 function getCookie(c: any, key: string): string | undefined {
-	const cookies = parseCookies(c.req.header("Cookie"));
-	return cookies[key];
+  const cookies = parseCookies(c.req.header("Cookie"));
+  return cookies[key];
 }
 
-function buildCookie(name: string, value: string, options: { httpOnly: boolean; maxAge: number }): string {
-	const useHostPrefix = name.startsWith("__Host-");
-	return `${name}=${value}; Path=/; ${options.httpOnly ? "HttpOnly; " : ""}Secure; SameSite=Lax${useHostPrefix ? "" : ""}; Max-Age=${options.maxAge}`;
+function buildCookie(
+  name: string,
+  value: string,
+  options: { httpOnly: boolean; maxAge: number },
+): string {
+  const useHostPrefix = name.startsWith("__Host-");
+  return `${name}=${value}; Path=/; ${options.httpOnly ? "HttpOnly; " : ""}Secure; SameSite=Lax${useHostPrefix ? "" : ""}; Max-Age=${options.maxAge}`;
 }
 
-function appendSessionCookies(response: Response, sessionToken: string, csrfToken: string): void {
-	response.headers.append(
-		"Set-Cookie",
-		buildCookie("__Host-session", sessionToken, { httpOnly: true, maxAge: SESSION_TTL_SECONDS })
-	);
-	response.headers.append(
-		"Set-Cookie",
-		buildCookie(CSRF_COOKIE_NAME, csrfToken, { httpOnly: false, maxAge: SESSION_TTL_SECONDS })
-	);
+function appendSessionCookies(
+  response: Response,
+  sessionToken: string,
+  csrfToken: string,
+): void {
+  response.headers.append(
+    "Set-Cookie",
+    buildCookie("__Host-session", sessionToken, {
+      httpOnly: true,
+      maxAge: SESSION_TTL_SECONDS,
+    }),
+  );
+  response.headers.append(
+    "Set-Cookie",
+    buildCookie(CSRF_COOKIE_NAME, csrfToken, {
+      httpOnly: false,
+      maxAge: SESSION_TTL_SECONDS,
+    }),
+  );
 }
 
 function appendClearedAuthCookies(response: Response): void {
-	response.headers.append("Set-Cookie", buildCookie("__Host-session", "", { httpOnly: true, maxAge: 0 }));
-	response.headers.append("Set-Cookie", buildCookie(CSRF_COOKIE_NAME, "", { httpOnly: false, maxAge: 0 }));
+  response.headers.append(
+    "Set-Cookie",
+    buildCookie("__Host-session", "", { httpOnly: true, maxAge: 0 }),
+  );
+  response.headers.append(
+    "Set-Cookie",
+    buildCookie(CSRF_COOKIE_NAME, "", { httpOnly: false, maxAge: 0 }),
+  );
 }
 
 function hasValidCsrf(c: any): boolean {
-	const cookieToken = getCookie(c, CSRF_COOKIE_NAME);
-	const headerToken = c.req.header("X-CSRF-Token");
-	
-	if (!cookieToken || !headerToken) {
-		return false;
-	}
-	
-	// Use constant-time comparison to prevent timing attacks
-	return constantTimeEqual(cookieToken, headerToken);
+  const cookieToken = getCookie(c, CSRF_COOKIE_NAME);
+  const headerToken = c.req.header("X-CSRF-Token");
+
+  if (!cookieToken || !headerToken) {
+    return false;
+  }
+
+  // Use constant-time comparison to prevent timing attacks
+  return constantTimeEqual(cookieToken, headerToken);
 }
 
 async function checkRateLimit(
-	c: any,
-	bucket: string,
-	limit: number,
-	windowSeconds: number
+  c: any,
+  bucket: string,
+  limit: number,
+  windowSeconds: number,
 ): Promise<Response | null> {
-	const clientIp = c.req.header("CF-Connecting-IP") || "unknown";
-	const key = `rate_limit:${bucket}:${clientIp}`;
-	const raw = await c.env.OAUTH_KV.get(key);
-	const current = Number.parseInt(raw || "0", 10);
+  const clientIp = c.req.header("CF-Connecting-IP") || "unknown";
+  const key = `rate_limit:${bucket}:${clientIp}`;
+  const raw = await c.env.OAUTH_KV.get(key);
+  const current = Number.parseInt(raw || "0", 10);
 
-	if (!Number.isNaN(current) && current >= limit) {
-		return c.json(
-			{
-				error: "rate_limited",
-				message: "Too many requests. Please try again later.",
-			},
-			429,
-			{
-				"Retry-After": String(windowSeconds),
-			}
-		);
-	}
+  if (!Number.isNaN(current) && current >= limit) {
+    return c.json(
+      {
+        error: "rate_limited",
+        message: "Too many requests. Please try again later.",
+      },
+      429,
+      {
+        "Retry-After": String(windowSeconds),
+      },
+    );
+  }
 
-	await c.env.OAUTH_KV.put(key, String(Number.isNaN(current) ? 1 : current + 1), {
-		expirationTtl: windowSeconds,
-	});
+  await c.env.OAUTH_KV.put(
+    key,
+    String(Number.isNaN(current) ? 1 : current + 1),
+    {
+      expirationTtl: windowSeconds,
+    },
+  );
 
-	return null;
+  return null;
 }
 
 // Add CORS middleware for all routes
 app.use("*", async (c, next) => {
-	// Handle OPTIONS preflight requests
-	if (c.req.method === "OPTIONS") {
-		return new Response(null, {
-			status: 204,
-			headers: { ...CORS_HEADERS },
-		});
-	}
+  // Handle OPTIONS preflight requests
+  if (c.req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: { ...getCorsHeaders(c.env) },
+    });
+  }
 
-	await next();
+  await next();
 
-	// Add CORS headers to all responses
-	c.res.headers.set("Access-Control-Allow-Origin", CORS_HEADERS["Access-Control-Allow-Origin"]);
-	c.res.headers.set("Access-Control-Allow-Methods", CORS_HEADERS["Access-Control-Allow-Methods"]);
-	c.res.headers.set("Access-Control-Allow-Headers", CORS_HEADERS["Access-Control-Allow-Headers"]);
+  // Add CORS headers to all responses
+  const corsHeaders = getCorsHeaders(c.env);
+  c.res.headers.set(
+    "Access-Control-Allow-Origin",
+    corsHeaders["Access-Control-Allow-Origin"],
+  );
+  c.res.headers.set(
+    "Access-Control-Allow-Methods",
+    corsHeaders["Access-Control-Allow-Methods"],
+  );
+  c.res.headers.set(
+    "Access-Control-Allow-Headers",
+    corsHeaders["Access-Control-Allow-Headers"],
+  );
 });
 
 /**
  * Generate a random state parameter for OAuth
  */
 function generateState(): string {
-	const array = new Uint8Array(16);
-	crypto.getRandomValues(array);
-	return Array.from(array, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const array = new Uint8Array(16);
+  crypto.getRandomValues(array);
+  return Array.from(array, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
 /**
@@ -232,27 +274,30 @@ function generateState(): string {
  * Handles local development where Wrangler rewrites the Host header
  */
 function getBaseUrl(c: any): string {
-	const url = new URL(c.req.url);
+  const url = new URL(c.req.url);
 
-	// Check for X-Forwarded-Host header (reverse proxy)
-	const forwardedHost = c.req.header("X-Forwarded-Host");
-	if (forwardedHost) {
-		return `${url.protocol}//${forwardedHost}`;
-	}
+  // Check for X-Forwarded-Host header (reverse proxy)
+  const forwardedHost = c.req.header("X-Forwarded-Host");
+  if (forwardedHost) {
+    return `${url.protocol}//${forwardedHost}`;
+  }
 
-	// Check if request came from localhost (local dev)
-	// Wrangler dev adds CF-Connecting-IP with localhost address
-	const cfConnectingIp = c.req.header("CF-Connecting-IP");
+  // Check if request came from localhost (local dev)
+  // Wrangler dev adds CF-Connecting-IP with localhost address
+  const cfConnectingIp = c.req.header("CF-Connecting-IP");
 
-	// Check if connecting from localhost (::1 is IPv6 localhost, 127.0.0.1 is IPv4)
-	const isLocalhost = cfConnectingIp === "::1" || cfConnectingIp === "127.0.0.1" || cfConnectingIp?.startsWith("127.");
+  // Check if connecting from localhost (::1 is IPv6 localhost, 127.0.0.1 is IPv4)
+  const isLocalhost =
+    cfConnectingIp === "::1" ||
+    cfConnectingIp === "127.0.0.1" ||
+    cfConnectingIp?.startsWith("127.");
 
-	if (isLocalhost) {
-		return `${url.protocol}//localhost:8787`;
-	}
+  if (isLocalhost) {
+    return `${url.protocol}//localhost:8787`;
+  }
 
-	// Production: use the Host header as-is
-	return `${url.protocol}//${url.host}`;
+  // Production: use the Host header as-is
+  return `${url.protocol}//${url.host}`;
 }
 
 /**
@@ -261,17 +306,20 @@ function getBaseUrl(c: any): string {
  * Tells clients how to access the protected resource
  */
 app.get("/.well-known/oauth-protected-resource", (c) => {
-	const baseUrl = getBaseUrl(c);
+  const baseUrl = getBaseUrl(c);
 
-	const response = c.json({
-		resource: baseUrl,
-		authorization_servers: [`${baseUrl}`],
-		bearer_methods_supported: ["header"],
-		resource_documentation: `${baseUrl}/`,
-	});
+  const response = c.json({
+    resource: baseUrl,
+    authorization_servers: [`${baseUrl}`],
+    bearer_methods_supported: ["header"],
+    resource_documentation: `${baseUrl}/`,
+  });
 
-	response.headers.set("Access-Control-Allow-Origin", CORS_HEADERS["Access-Control-Allow-Origin"]);
-	return response;
+  response.headers.set(
+    "Access-Control-Allow-Origin",
+    getCorsHeaders(c.env)["Access-Control-Allow-Origin"],
+  );
+  return response;
 });
 
 /**
@@ -280,24 +328,27 @@ app.get("/.well-known/oauth-protected-resource", (c) => {
  * Allows clients to discover OAuth configuration automatically
  */
 app.get("/.well-known/oauth-authorization-server", (c) => {
-	const baseUrl = getBaseUrl(c);
+  const baseUrl = getBaseUrl(c);
 
-	const response = c.json({
-		issuer: baseUrl,
-		authorization_endpoint: `${baseUrl}/authorize`,
-		token_endpoint: `${baseUrl}/token`,
-		registration_endpoint: `${baseUrl}/register`,
-		scopes_supported: ["mcp"],
-		response_types_supported: ["code"],
-		grant_types_supported: ["authorization_code"],
-		token_endpoint_auth_methods_supported: ["none"], // Public client
-		code_challenge_methods_supported: ["S256"], // PKCE support
-		revocation_endpoint_auth_methods_supported: ["none"],
-		service_documentation: `${baseUrl}/`,
-	});
+  const response = c.json({
+    issuer: baseUrl,
+    authorization_endpoint: `${baseUrl}/authorize`,
+    token_endpoint: `${baseUrl}/token`,
+    registration_endpoint: `${baseUrl}/register`,
+    scopes_supported: ["mcp"],
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code"],
+    token_endpoint_auth_methods_supported: ["none"], // Public client
+    code_challenge_methods_supported: ["S256"], // PKCE support
+    revocation_endpoint_auth_methods_supported: ["none"],
+    service_documentation: `${baseUrl}/`,
+  });
 
-	response.headers.set("Access-Control-Allow-Origin", CORS_HEADERS["Access-Control-Allow-Origin"]);
-	return response;
+  response.headers.set(
+    "Access-Control-Allow-Origin",
+    getCorsHeaders(c.env)["Access-Control-Allow-Origin"],
+  );
+  return response;
 });
 
 /**
@@ -305,132 +356,163 @@ app.get("/.well-known/oauth-authorization-server", (c) => {
  * OAuth authorization endpoint - initiates GitHub OAuth flow
  */
 app.get("/authorize", async (c) => {
-	const rateLimitResponse = await checkRateLimit(c, "authorize_get", 60, 60);
-	if (rateLimitResponse) {
-		return rateLimitResponse;
-	}
+  const rateLimitResponse = await checkRateLimit(c, "authorize_get", 60, 60);
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
 
-	const clientId = c.req.query("client_id");
-	const redirectUri = c.req.query("redirect_uri");
-	const state = c.req.query("state");
-	const scope = c.req.query("scope") || "mcp";
-	const codeChallenge = c.req.query("code_challenge");
-	const codeChallengeMethod = c.req.query("code_challenge_method");
+  const clientId = c.req.query("client_id");
+  const redirectUri = c.req.query("redirect_uri");
+  const state = c.req.query("state");
+  const scope = c.req.query("scope") || "mcp";
+  const codeChallenge = c.req.query("code_challenge");
+  const codeChallengeMethod = c.req.query("code_challenge_method");
 
-	if (!clientId || !redirectUri || !state) {
-		return c.text("Missing required parameters: client_id, redirect_uri, or state", 400);
-	}
-	
-	// Validate input lengths
-	if (!isValidLength(clientId, 200) || !isValidLength(redirectUri, 2000) || !isValidLength(state, 500)) {
-		return c.text("Invalid parameter length", 400);
-	}
+  if (!clientId || !redirectUri || !state) {
+    return c.text(
+      "Missing required parameters: client_id, redirect_uri, or state",
+      400,
+    );
+  }
 
-	const normalizedRedirectUri = normalizeRedirectUri(redirectUri);
-	if (!normalizedRedirectUri) {
-		return c.text("Invalid redirect_uri. Must be HTTPS (or localhost HTTP for development).", 400);
-	}
+  // Validate input lengths
+  if (
+    !isValidLength(clientId, 200) ||
+    !isValidLength(redirectUri, 2000) ||
+    !isValidLength(state, 500)
+  ) {
+    return c.text("Invalid parameter length", 400);
+  }
 
-	if (clientId === "setup") {
-		const setupUrl = new URL(normalizedRedirectUri);
-		if (setupUrl.pathname !== "/setup") {
-			return c.text("Invalid redirect_uri for setup client", 400);
-		}
-	} else {
-		const registeredClient = await c.env.OAUTH_KV.get(`client:${clientId}`, "json");
-		if (!registeredClient || typeof registeredClient !== "object") {
-			return c.text("Unknown client_id", 400);
-		}
+  const normalizedRedirectUri = normalizeRedirectUri(redirectUri);
+  if (!normalizedRedirectUri) {
+    return c.text(
+      "Invalid redirect_uri. Must be HTTPS (or localhost HTTP for development).",
+      400,
+    );
+  }
 
-		const redirectUris = (registeredClient as { redirect_uris?: string[] }).redirect_uris;
-		if (!Array.isArray(redirectUris) || !redirectUris.includes(normalizedRedirectUri)) {
-			return c.text("redirect_uri is not registered for this client_id", 400);
-		}
+  if (clientId === "setup") {
+    const setupUrl = new URL(normalizedRedirectUri);
+    if (setupUrl.pathname !== "/setup") {
+      return c.text("Invalid redirect_uri for setup client", 400);
+    }
+  } else {
+    const registeredClient = await c.env.OAUTH_KV.get(
+      `client:${clientId}`,
+      "json",
+    );
+    if (!registeredClient || typeof registeredClient !== "object") {
+      return c.text("Unknown client_id", 400);
+    }
 
-		if (!codeChallenge || codeChallengeMethod !== "S256") {
-			return c.text("PKCE required: provide code_challenge and code_challenge_method=S256", 400);
-		}
-	}
+    const redirectUris = (registeredClient as { redirect_uris?: string[] })
+      .redirect_uris;
+    if (
+      !Array.isArray(redirectUris) ||
+      !redirectUris.includes(normalizedRedirectUri)
+    ) {
+      return c.text("redirect_uri is not registered for this client_id", 400);
+    }
 
-	// Check if user is already authenticated (has session cookie)
-	const sessionCookie = c.req.header("Cookie");
-	const sessionToken = sessionCookie?.match(/__Host-session=([^;]+)/)?.[1];
+    if (!codeChallenge || codeChallengeMethod !== "S256") {
+      return c.text(
+        "PKCE required: provide code_challenge and code_challenge_method=S256",
+        400,
+      );
+    }
+  }
 
-	if (sessionToken) {
-		// User is already authenticated, check if client is already approved
-		const sessionData = await c.env.OAUTH_KV.get(`session:${sessionToken}`, "json");
+  // Check if user is already authenticated (has session cookie)
+  const sessionCookie = c.req.header("Cookie");
+  const sessionToken = sessionCookie?.match(/__Host-session=([^;]+)/)?.[1];
 
-		if (sessionData && typeof sessionData === "object" && "login" in sessionData) {
-			const username = (sessionData as { login: string }).login;
-			const alreadyApproved = await clientIdAlreadyApproved(c.env.OAUTH_KV, username, clientId);
+  if (sessionToken) {
+    // User is already authenticated, check if client is already approved
+    const sessionData = await c.env.OAUTH_KV.get(
+      `session:${sessionToken}`,
+      "json",
+    );
 
-			if (alreadyApproved) {
-				// Auto-approve and redirect
-				const authCode = generateState();
-				await c.env.OAUTH_KV.put(
-					`authcode:${authCode}`,
-					JSON.stringify({
-						clientId,
-						redirectUri: normalizedRedirectUri,
-						codeChallenge,
-						codeChallengeMethod,
-						sessionToken,
-					}),
-					{ expirationTtl: 600 } // 10 minutes
-				);
+    if (
+      sessionData &&
+      typeof sessionData === "object" &&
+      "login" in sessionData
+    ) {
+      const username = (sessionData as { login: string }).login;
+      const alreadyApproved = await clientIdAlreadyApproved(
+        c.env.OAUTH_KV,
+        username,
+        clientId,
+      );
 
-				const redirectUrl = new URL(normalizedRedirectUri);
-				redirectUrl.searchParams.set("code", authCode);
-				redirectUrl.searchParams.set("state", state);
+      if (alreadyApproved) {
+        // Auto-approve and redirect
+        const authCode = generateState();
+        await c.env.OAUTH_KV.put(
+          `authcode:${authCode}`,
+          JSON.stringify({
+            clientId,
+            redirectUri: normalizedRedirectUri,
+            codeChallenge,
+            codeChallengeMethod,
+            sessionToken,
+          }),
+          { expirationTtl: 600 }, // 10 minutes
+        );
 
-				return c.redirect(redirectUrl.toString());
-			}
+        const redirectUrl = new URL(normalizedRedirectUri);
+        redirectUrl.searchParams.set("code", authCode);
+        redirectUrl.searchParams.set("state", state);
 
-			// Show approval dialog
-			const html = renderApprovalDialog({
-				clientId,
-				redirectUri: normalizedRedirectUri,
-				state,
-				scope,
-				...(codeChallenge ? { codeChallenge } : {}),
-				...(codeChallengeMethod ? { codeChallengeMethod } : {}),
-				userLogin: username,
-				userName: (sessionData as { name?: string }).name || username,
-				authorizeEndpoint: "/authorize",
-			});
+        return c.redirect(redirectUrl.toString());
+      }
 
-			return c.html(html);
-		}
-	}
+      // Show approval dialog
+      const html = renderApprovalDialog({
+        clientId,
+        redirectUri: normalizedRedirectUri,
+        state,
+        scope,
+        ...(codeChallenge ? { codeChallenge } : {}),
+        ...(codeChallengeMethod ? { codeChallengeMethod } : {}),
+        userLogin: username,
+        userName: (sessionData as { name?: string }).name || username,
+        authorizeEndpoint: "/authorize",
+      });
 
-	// User not authenticated, redirect to GitHub OAuth
-	const githubState = generateState();
+      return c.html(html);
+    }
+  }
 
-	// Store OAuth state and client info
-	await c.env.OAUTH_KV.put(
-		`oauth_state:${githubState}`,
-		JSON.stringify({
-			clientId,
-			redirectUri: normalizedRedirectUri,
-			state,
-			scope,
-			codeChallenge: codeChallenge || null,
-			codeChallengeMethod: codeChallengeMethod || null,
-		}),
-		{ expirationTtl: 600 } // 10 minutes
-	);
+  // User not authenticated, redirect to GitHub OAuth
+  const githubState = generateState();
 
-	const url = new URL(c.req.url);
-	const callbackUri = `${url.protocol}//${url.host}/callback`;
+  // Store OAuth state and client info
+  await c.env.OAUTH_KV.put(
+    `oauth_state:${githubState}`,
+    JSON.stringify({
+      clientId,
+      redirectUri: normalizedRedirectUri,
+      state,
+      scope,
+      codeChallenge: codeChallenge || null,
+      codeChallengeMethod: codeChallengeMethod || null,
+    }),
+    { expirationTtl: 600 }, // 10 minutes
+  );
 
-	const githubAuthUrl = getUpstreamAuthorizeUrl(
-		c.env.GITHUB_CLIENT_ID,
-		callbackUri,
-		githubState,
-		"user:email"
-	);
+  const url = new URL(c.req.url);
+  const callbackUri = `${url.protocol}//${url.host}/callback`;
 
-	return c.redirect(githubAuthUrl);
+  const githubAuthUrl = getUpstreamAuthorizeUrl(
+    c.env.GITHUB_CLIENT_ID,
+    callbackUri,
+    githubState,
+    "user:email",
+  );
+
+  return c.redirect(githubAuthUrl);
 });
 
 /**
@@ -438,55 +520,62 @@ app.get("/authorize", async (c) => {
  * Handles approval form submission
  */
 app.post("/authorize", async (c) => {
-	const rateLimitResponse = await checkRateLimit(c, "authorize_post", 30, 60);
-	if (rateLimitResponse) {
-		return rateLimitResponse;
-	}
+  const rateLimitResponse = await checkRateLimit(c, "authorize_post", 30, 60);
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
 
-	const approval = await parseRedirectApproval(c.req.raw);
+  const approval = await parseRedirectApproval(c.req.raw);
 
-	if (!approval.approved) {
-		return c.text("Authorization denied", 403);
-	}
+  if (!approval.approved) {
+    return c.text("Authorization denied", 403);
+  }
 
-	// Get session from cookie
-	const sessionCookie = c.req.header("Cookie");
-	const sessionToken = sessionCookie?.match(/__Host-session=([^;]+)/)?.[1];
+  // Get session from cookie
+  const sessionCookie = c.req.header("Cookie");
+  const sessionToken = sessionCookie?.match(/__Host-session=([^;]+)/)?.[1];
 
-	if (!sessionToken) {
-		return c.text("No session found", 401);
-	}
+  if (!sessionToken) {
+    return c.text("No session found", 401);
+  }
 
-	const sessionData = await c.env.OAUTH_KV.get(`session:${sessionToken}`, "json");
-	if (!sessionData || typeof sessionData !== "object" || !("login" in sessionData)) {
-		return c.text("Invalid session", 401);
-	}
+  const sessionData = await c.env.OAUTH_KV.get(
+    `session:${sessionToken}`,
+    "json",
+  );
+  if (
+    !sessionData ||
+    typeof sessionData !== "object" ||
+    !("login" in sessionData)
+  ) {
+    return c.text("Invalid session", 401);
+  }
 
-	const username = (sessionData as { login: string }).login;
+  const username = (sessionData as { login: string }).login;
 
-	// Store approval
-	await storeClientApproval(c.env.OAUTH_KV, username, approval.clientId);
+  // Store approval
+  await storeClientApproval(c.env.OAUTH_KV, username, approval.clientId);
 
-	// Generate authorization code
-	const authCode = generateState();
-	await c.env.OAUTH_KV.put(
-		`authcode:${authCode}`,
-		JSON.stringify({
-			clientId: approval.clientId,
-			redirectUri: approval.redirectUri,
-			codeChallenge: approval.codeChallenge || null,
-			codeChallengeMethod: approval.codeChallengeMethod || null,
-			sessionToken,
-		}),
-		{ expirationTtl: 600 } // 10 minutes
-	);
+  // Generate authorization code
+  const authCode = generateState();
+  await c.env.OAUTH_KV.put(
+    `authcode:${authCode}`,
+    JSON.stringify({
+      clientId: approval.clientId,
+      redirectUri: approval.redirectUri,
+      codeChallenge: approval.codeChallenge || null,
+      codeChallengeMethod: approval.codeChallengeMethod || null,
+      sessionToken,
+    }),
+    { expirationTtl: 600 }, // 10 minutes
+  );
 
-	// Redirect back to client with auth code
-	const redirectUrl = new URL(approval.redirectUri);
-	redirectUrl.searchParams.set("code", authCode);
-	redirectUrl.searchParams.set("state", approval.state);
+  // Redirect back to client with auth code
+  const redirectUrl = new URL(approval.redirectUri);
+  redirectUrl.searchParams.set("code", authCode);
+  redirectUrl.searchParams.set("state", approval.state);
 
-	return c.redirect(redirectUrl.toString());
+  return c.redirect(redirectUrl.toString());
 });
 
 /**
@@ -494,22 +583,23 @@ app.post("/authorize", async (c) => {
  * GitHub OAuth callback - exchanges code for access token
  */
 app.get("/callback", async (c) => {
-	const rateLimitResponse = await checkRateLimit(c, "callback", 30, 60);
-	if (rateLimitResponse) {
-		return rateLimitResponse;
-	}
+  const rateLimitResponse = await checkRateLimit(c, "callback", 30, 60);
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
 
-	const code = c.req.query("code");
-	const state = c.req.query("state");
+  const code = c.req.query("code");
+  const state = c.req.query("state");
 
-	if (!code || !state) {
-		return c.text("Missing code or state parameter", 400);
-	}
+  if (!code || !state) {
+    return c.text("Missing code or state parameter", 400);
+  }
 
-	// Retrieve OAuth state
-	const stateData = await c.env.OAUTH_KV.get(`oauth_state:${state}`, "json");
-	if (!stateData || typeof stateData !== "object") {
-		return c.html(`<!DOCTYPE html>
+  // Retrieve OAuth state
+  const stateData = await c.env.OAUTH_KV.get(`oauth_state:${state}`, "json");
+  if (!stateData || typeof stateData !== "object") {
+    return c.html(
+      `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -522,102 +612,122 @@ app.get("/callback", async (c) => {
   <p>Your authorization request timed out after 10 minutes.</p>
   <p><strong>To continue:</strong> return to your MCP client and restart the connection. If you are using Claude Desktop, disconnect and reconnect the server.</p>
 </body>
-</html>`, 400);
-	}
+</html>`,
+      400,
+    );
+  }
 
-	const { clientId, redirectUri, state: clientState, scope, codeChallenge, codeChallengeMethod } = stateData as {
-		clientId: string;
-		redirectUri: string;
-		state: string;
-		scope: string;
-		codeChallenge?: string | null;
-		codeChallengeMethod?: string | null;
-	};
+  const {
+    clientId,
+    redirectUri,
+    state: clientState,
+    scope,
+    codeChallenge,
+    codeChallengeMethod,
+  } = stateData as {
+    clientId: string;
+    redirectUri: string;
+    state: string;
+    scope: string;
+    codeChallenge?: string | null;
+    codeChallengeMethod?: string | null;
+  };
 
-	try {
-		// Exchange code for GitHub access token
-		const url = new URL(c.req.url);
-		const callbackUri = `${url.protocol}//${url.host}/callback`;
+  try {
+    // Exchange code for GitHub access token
+    const url = new URL(c.req.url);
+    const callbackUri = `${url.protocol}//${url.host}/callback`;
 
-		const accessToken = await fetchUpstreamAuthToken(
-			code,
-			c.env.GITHUB_CLIENT_ID,
-			c.env.GITHUB_CLIENT_SECRET,
-			callbackUri
-		);
+    const accessToken = await fetchUpstreamAuthToken(
+      code,
+      c.env.GITHUB_CLIENT_ID,
+      c.env.GITHUB_CLIENT_SECRET,
+      callbackUri,
+    );
 
-		// Fetch user information from GitHub
-		const user = await fetchGitHubUser(accessToken);
+    // Fetch user information from GitHub
+    const user = await fetchGitHubUser(accessToken);
 
-		// Create session
-		const sessionToken = generateState();
-		const baseUrl = `${url.protocol}//${url.host}`;
-		const sessionData: Props = {
-			login: user.login,
-			name: user.name,
-			email: user.email,
-			accessToken,
-			baseUrl,
-		};
+    // Create session
+    const sessionToken = generateState();
+    const baseUrl = `${url.protocol}//${url.host}`;
+    const sessionData: Props = {
+      login: user.login,
+      name: user.name,
+      email: user.email,
+      accessToken,
+      baseUrl,
+    };
 
-		// Store session in KV (expires in 30 days)
-		await c.env.OAUTH_KV.put(`session:${sessionToken}`, JSON.stringify(sessionData), {
-			expirationTtl: SESSION_TTL_SECONDS,
-		});
+    // Store session in KV (expires in 30 days)
+    await c.env.OAUTH_KV.put(
+      `session:${sessionToken}`,
+      JSON.stringify(sessionData),
+      {
+        expirationTtl: SESSION_TTL_SECONDS,
+      },
+    );
 
-		const csrfToken = generateState();
+    const csrfToken = generateState();
 
-		// Clean up state
-		await c.env.OAUTH_KV.delete(`oauth_state:${state}`);
+    // Clean up state
+    await c.env.OAUTH_KV.delete(`oauth_state:${state}`);
 
-		// Check if client is already approved
-		const alreadyApproved = await clientIdAlreadyApproved(c.env.OAUTH_KV, user.login, clientId);
+    // Check if client is already approved
+    const alreadyApproved = await clientIdAlreadyApproved(
+      c.env.OAUTH_KV,
+      user.login,
+      clientId,
+    );
 
-		if (alreadyApproved) {
-			// Auto-approve and redirect
-			const authCode = generateState();
-			await c.env.OAUTH_KV.put(
-				`authcode:${authCode}`,
-				JSON.stringify({
-					clientId,
-					redirectUri,
-					codeChallenge: codeChallenge || null,
-					codeChallengeMethod: codeChallengeMethod || null,
-					sessionToken,
-				}),
-				{ expirationTtl: 600 }
-			);
+    if (alreadyApproved) {
+      // Auto-approve and redirect
+      const authCode = generateState();
+      await c.env.OAUTH_KV.put(
+        `authcode:${authCode}`,
+        JSON.stringify({
+          clientId,
+          redirectUri,
+          codeChallenge: codeChallenge || null,
+          codeChallengeMethod: codeChallengeMethod || null,
+          sessionToken,
+        }),
+        { expirationTtl: 600 },
+      );
 
-			const redirectUrl = new URL(redirectUri);
-			redirectUrl.searchParams.set("code", authCode);
-			redirectUrl.searchParams.set("state", clientState);
+      const redirectUrl = new URL(redirectUri);
+      redirectUrl.searchParams.set("code", authCode);
+      redirectUrl.searchParams.set("state", clientState);
 
-			// Set session cookie
-			const response = c.redirect(redirectUrl.toString());
-			appendSessionCookies(response, sessionToken, csrfToken);
-			return response;
-		}
+      // Set session cookie
+      const response = c.redirect(redirectUrl.toString());
+      appendSessionCookies(response, sessionToken, csrfToken);
+      return response;
+    }
 
-		// Show approval dialog
-		const html = renderApprovalDialog({
-			clientId,
-			redirectUri,
-			state: clientState,
-			scope,
-			...(codeChallenge ? { codeChallenge } : {}),
-			...(codeChallengeMethod ? { codeChallengeMethod } : {}),
-			userLogin: user.login,
-			userName: user.name,
-			authorizeEndpoint: "/authorize",
-		});
+    // Show approval dialog
+    const html = renderApprovalDialog({
+      clientId,
+      redirectUri,
+      state: clientState,
+      scope,
+      ...(codeChallenge ? { codeChallenge } : {}),
+      ...(codeChallengeMethod ? { codeChallengeMethod } : {}),
+      userLogin: user.login,
+      userName: user.name,
+      authorizeEndpoint: "/authorize",
+    });
 
-		const response = c.html(html);
-		appendSessionCookies(response, sessionToken, csrfToken);
-		return response;
-	} catch (error) {
-		const requestId = logError(c, "OAuth callback error", error);
-		return c.text(`OAuth error. Please try again. Request ID: ${requestId}`, 500);
-	}
+    const response = c.html(html);
+    appendSessionCookies(response, sessionToken, csrfToken);
+    return response;
+  } catch (error) {
+    const requestId = logError(c, "OAuth callback error", error);
+    return c.text(
+      `OAuth error. Please try again. Request ID: ${requestId}`,
+      500,
+    );
+  }
 });
 
 /**
@@ -626,199 +736,230 @@ app.get("/callback", async (c) => {
  * This is what MCP clients call to complete the OAuth flow
  */
 app.post("/token", async (c) => {
-	const rateLimitResponse = await checkRateLimit(c, "token", 30, 60);
-	if (rateLimitResponse) {
-		return rateLimitResponse;
-	}
+  const rateLimitResponse = await checkRateLimit(c, "token", 30, 60);
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
 
-	let formData: FormData;
-	try {
-		formData = await c.req.formData();
-	} catch {
-		return c.json(
-			{
-				error: "invalid_request",
-				error_description: "Request body must be valid form data.",
-			},
-			400
-		);
-	}
+  let formData: FormData;
+  try {
+    formData = await c.req.formData();
+  } catch {
+    return c.json(
+      {
+        error: "invalid_request",
+        error_description: "Request body must be valid form data.",
+      },
+      400,
+    );
+  }
 
-	try {
-		const rawGrantType = formData.get("grant_type") ?? undefined;
-		const rawCode = formData.get("code") ?? undefined;
-		const rawRedirectUri = formData.get("redirect_uri") ?? undefined;
-		const rawClientId = formData.get("client_id") ?? undefined;
-		const rawCodeVerifier = formData.get("code_verifier") ?? undefined;
+  try {
+    const rawGrantType = formData.get("grant_type") ?? undefined;
+    const rawCode = formData.get("code") ?? undefined;
+    const rawRedirectUri = formData.get("redirect_uri") ?? undefined;
+    const rawClientId = formData.get("client_id") ?? undefined;
+    const rawCodeVerifier = formData.get("code_verifier") ?? undefined;
 
-		const grantTypeResult = TokenGrantTypeSchema.safeParse(rawGrantType);
-		if (!grantTypeResult.success) {
-			return c.json(
-				{
-					error: "invalid_request",
-					error_description: grantTypeResult.error.issues[0]?.message ?? "Invalid grant_type.",
-				},
-				400
-			);
-		}
+    const grantTypeResult = TokenGrantTypeSchema.safeParse(rawGrantType);
+    if (!grantTypeResult.success) {
+      return c.json(
+        {
+          error: "invalid_request",
+          error_description:
+            grantTypeResult.error.issues[0]?.message ?? "Invalid grant_type.",
+        },
+        400,
+      );
+    }
 
-		const grantType = grantTypeResult.data;
+    const grantType = grantTypeResult.data;
 
-		// Check grant_type before validating other required fields
-		if (grantType !== "authorization_code") {
-			return c.json(
-				{
-					error: "unsupported_grant_type",
-					error_description: "Only authorization_code grant type is supported",
-				},
-				400
-			);
-		}
+    // Check grant_type before validating other required fields
+    if (grantType !== "authorization_code") {
+      return c.json(
+        {
+          error: "unsupported_grant_type",
+          error_description: "Only authorization_code grant type is supported",
+        },
+        400,
+      );
+    }
 
-		const codeResult = TokenCodeSchema.safeParse(rawCode);
-		const redirectUriResult = TokenRedirectUriSchema.safeParse(rawRedirectUri);
-		const clientIdResult = TokenClientIdSchema.safeParse(rawClientId);
-		const codeVerifierResult = TokenCodeVerifierSchema.safeParse(rawCodeVerifier);
+    const codeResult = TokenCodeSchema.safeParse(rawCode);
+    const redirectUriResult = TokenRedirectUriSchema.safeParse(rawRedirectUri);
+    const clientIdResult = TokenClientIdSchema.safeParse(rawClientId);
+    const codeVerifierResult =
+      TokenCodeVerifierSchema.safeParse(rawCodeVerifier);
 
-		if (!codeResult.success || !redirectUriResult.success || !clientIdResult.success || !codeVerifierResult.success) {
-			return c.json(
-				{
-					error: "invalid_request",
-					error_description: "Missing or invalid required parameters: code, redirect_uri, or client_id",
-				},
-				400
-			);
-		}
+    if (
+      !codeResult.success ||
+      !redirectUriResult.success ||
+      !clientIdResult.success ||
+      !codeVerifierResult.success
+    ) {
+      return c.json(
+        {
+          error: "invalid_request",
+          error_description:
+            "Missing or invalid required parameters: code, redirect_uri, or client_id",
+        },
+        400,
+      );
+    }
 
-		const code = codeResult.data;
-		const redirectUri = redirectUriResult.data;
-		const clientId = clientIdResult.data;
-		const codeVerifier = codeVerifierResult.data;
+    const code = codeResult.data;
+    const redirectUri = redirectUriResult.data;
+    const clientId = clientIdResult.data;
+    const codeVerifier = codeVerifierResult.data;
 
-		const normalizedRedirectUri = normalizeRedirectUri(redirectUri);
-		if (!normalizedRedirectUri) {
-			return c.json(
-				{
-					error: "invalid_request",
-					error_description: "Invalid redirect_uri",
-				},
-				400
-			);
-		}
+    const normalizedRedirectUri = normalizeRedirectUri(redirectUri);
+    if (!normalizedRedirectUri) {
+      return c.json(
+        {
+          error: "invalid_request",
+          error_description: "Invalid redirect_uri",
+        },
+        400,
+      );
+    }
 
-		// Retrieve authorization code from KV
-		const authData = await c.env.OAUTH_KV.get(`authcode:${code}`, "json");
-		if (!authData || typeof authData !== "object") {
-			return c.json(
-				{
-					error: "invalid_grant",
-					error_description: "Invalid or expired authorization code",
-				},
-				400
-			);
-		}
+    // Retrieve authorization code from KV
+    const authData = await c.env.OAUTH_KV.get(`authcode:${code}`, "json");
+    if (!authData || typeof authData !== "object") {
+      return c.json(
+        {
+          error: "invalid_grant",
+          error_description: "Invalid or expired authorization code",
+        },
+        400,
+      );
+    }
 
-		const { clientId: storedClientId, redirectUri: storedRedirectUri, sessionToken } = authData as {
-			clientId: string;
-			redirectUri: string;
-			codeChallenge?: string | null;
-			codeChallengeMethod?: string | null;
-			sessionToken: string;
-		};
+    const {
+      clientId: storedClientId,
+      redirectUri: storedRedirectUri,
+      sessionToken,
+    } = authData as {
+      clientId: string;
+      redirectUri: string;
+      codeChallenge?: string | null;
+      codeChallengeMethod?: string | null;
+      sessionToken: string;
+    };
 
-		if (storedClientId !== "setup") {
-			if (!codeVerifier || typeof codeVerifier !== "string") {
-				return c.json(
-					{
-						error: "invalid_request",
-						error_description: "Missing code_verifier",
-					},
-					400
-				);
-			}
+    if (storedClientId !== "setup") {
+      if (!codeVerifier || typeof codeVerifier !== "string") {
+        return c.json(
+          {
+            error: "invalid_request",
+            error_description: "Missing code_verifier",
+          },
+          400,
+        );
+      }
 
-			const authCodeData = authData as { codeChallenge?: string | null; codeChallengeMethod?: string | null };
-			if (!authCodeData.codeChallenge || authCodeData.codeChallengeMethod !== "S256") {
-				return c.json(
-					{
-						error: "invalid_grant",
-						error_description: "Invalid PKCE parameters",
-					},
-					400
-				);
-			}
+      const authCodeData = authData as {
+        codeChallenge?: string | null;
+        codeChallengeMethod?: string | null;
+      };
+      if (
+        !authCodeData.codeChallenge ||
+        authCodeData.codeChallengeMethod !== "S256"
+      ) {
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "Invalid PKCE parameters",
+          },
+          400,
+        );
+      }
 
-			const computedCodeChallenge = await createS256CodeChallenge(codeVerifier);
-			// Use constant-time comparison to prevent timing attacks
-			if (!constantTimeEqual(computedCodeChallenge, authCodeData.codeChallenge)) {
-				return c.json(
-					{
-						error: "invalid_grant",
-						error_description: "Invalid code_verifier",
-					},
-					400
-				);
-			}
-		}
+      const computedCodeChallenge = await createS256CodeChallenge(codeVerifier);
+      // Use constant-time comparison to prevent timing attacks
+      if (
+        !constantTimeEqual(computedCodeChallenge, authCodeData.codeChallenge)
+      ) {
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "Invalid code_verifier",
+          },
+          400,
+        );
+      }
+    }
 
-		// Validate client_id and redirect_uri match
-		if (clientId !== storedClientId || normalizedRedirectUri !== storedRedirectUri) {
-			return c.json(
-				{
-					error: "invalid_grant",
-					error_description: "Client ID or redirect URI mismatch",
-				},
-				400
-			);
-		}
+    // Validate client_id and redirect_uri match
+    if (
+      clientId !== storedClientId ||
+      normalizedRedirectUri !== storedRedirectUri
+    ) {
+      return c.json(
+        {
+          error: "invalid_grant",
+          error_description: "Client ID or redirect URI mismatch",
+        },
+        400,
+      );
+    }
 
-		// Retrieve session data
-		const sessionData = await c.env.OAUTH_KV.get(`session:${sessionToken}`, "json");
-		if (!sessionData || typeof sessionData !== "object") {
-			return c.json(
-				{
-					error: "invalid_grant",
-					error_description: "Invalid or expired session",
-				},
-				400
-			);
-		}
+    // Retrieve session data
+    const sessionData = await c.env.OAUTH_KV.get(
+      `session:${sessionToken}`,
+      "json",
+    );
+    if (!sessionData || typeof sessionData !== "object") {
+      return c.json(
+        {
+          error: "invalid_grant",
+          error_description: "Invalid or expired session",
+        },
+        400,
+      );
+    }
 
-		// Delete the authorization code (single-use)
-		await c.env.OAUTH_KV.delete(`authcode:${code}`);
+    // Delete the authorization code (single-use)
+    await c.env.OAUTH_KV.delete(`authcode:${code}`);
 
-		// Generate independent OAuth access token
-		const accessToken = `${generateState()}${generateState()}`;
-		await c.env.OAUTH_KV.put(
-			`access_token:${accessToken}`,
-			JSON.stringify({
-				sessionToken,
-				clientId: storedClientId,
-				issued_at: new Date().toISOString(),
-			}),
-			{ expirationTtl: SESSION_TTL_SECONDS }
-		);
-		await c.env.OAUTH_KV.put(`session_access_token:${sessionToken}:${accessToken}`, "1", {
-			expirationTtl: SESSION_TTL_SECONDS,
-		});
+    // Generate independent OAuth access token
+    const accessToken = `${generateState()}${generateState()}`;
+    await c.env.OAUTH_KV.put(
+      `access_token:${accessToken}`,
+      JSON.stringify({
+        sessionToken,
+        clientId: storedClientId,
+        issued_at: new Date().toISOString(),
+      }),
+      { expirationTtl: SESSION_TTL_SECONDS },
+    );
+    await c.env.OAUTH_KV.put(
+      `session_access_token:${sessionToken}:${accessToken}`,
+      "1",
+      {
+        expirationTtl: SESSION_TTL_SECONDS,
+      },
+    );
 
-		// Return OAuth 2.1 token response
-		return c.json({
-			access_token: accessToken,
-			token_type: "Bearer",
-			expires_in: SESSION_TTL_SECONDS,
-			scope: "mcp",
-		});
-	} catch (error) {
-		logError(c, "Token endpoint error", error);
-		return c.json(
-			{
-				error: "server_error",
-				error_description: "An error occurred while processing the token request",
-			},
-			500
-		);
-	}
+    // Return OAuth 2.1 token response
+    return c.json({
+      access_token: accessToken,
+      token_type: "Bearer",
+      expires_in: SESSION_TTL_SECONDS,
+      scope: "mcp",
+    });
+  } catch (error) {
+    logError(c, "Token endpoint error", error);
+    return c.json(
+      {
+        error: "server_error",
+        error_description:
+          "An error occurred while processing the token request",
+      },
+      500,
+    );
+  }
 });
 
 /**
@@ -827,82 +968,87 @@ app.post("/token", async (c) => {
  * For now, we accept all clients dynamically
  */
 app.post("/register", async (c) => {
-	const rateLimitResponse = await checkRateLimit(c, "register", 20, 60);
-	if (rateLimitResponse) {
-		return rateLimitResponse;
-	}
+  const rateLimitResponse = await checkRateLimit(c, "register", 20, 60);
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
 
-	try {
-		const body = await c.req.json();
-		const redirectUris = body.redirect_uris;
+  try {
+    const body = await c.req.json();
+    const redirectUris = body.redirect_uris;
 
-		if (!redirectUris || !Array.isArray(redirectUris) || redirectUris.length === 0) {
-			return c.json(
-				{
-					error: "invalid_redirect_uri",
-					error_description: "At least one redirect_uri is required",
-				},
-				400
-			);
-		}
+    if (
+      !redirectUris ||
+      !Array.isArray(redirectUris) ||
+      redirectUris.length === 0
+    ) {
+      return c.json(
+        {
+          error: "invalid_redirect_uri",
+          error_description: "At least one redirect_uri is required",
+        },
+        400,
+      );
+    }
 
-		const normalizedRedirectUris: string[] = [];
-		for (const redirectUri of redirectUris) {
-			if (typeof redirectUri !== "string") {
-				return c.json(
-					{
-						error: "invalid_redirect_uri",
-						error_description: "All redirect_uris must be strings",
-					},
-					400
-				);
-			}
+    const normalizedRedirectUris: string[] = [];
+    for (const redirectUri of redirectUris) {
+      if (typeof redirectUri !== "string") {
+        return c.json(
+          {
+            error: "invalid_redirect_uri",
+            error_description: "All redirect_uris must be strings",
+          },
+          400,
+        );
+      }
 
-			const normalized = normalizeRedirectUri(redirectUri);
-			if (!normalized) {
-				return c.json(
-					{
-						error: "invalid_redirect_uri",
-						error_description: "redirect_uris must be HTTPS (or localhost HTTP for development)",
-					},
-					400
-				);
-			}
+      const normalized = normalizeRedirectUri(redirectUri);
+      if (!normalized) {
+        return c.json(
+          {
+            error: "invalid_redirect_uri",
+            error_description:
+              "redirect_uris must be HTTPS (or localhost HTTP for development)",
+          },
+          400,
+        );
+      }
 
-			normalizedRedirectUris.push(normalized);
-		}
+      normalizedRedirectUris.push(normalized);
+    }
 
-		// Generate a client ID
-		const clientId = generateState();
+    // Generate a client ID
+    const clientId = generateState();
 
-		// Store client registration in KV (optional, for future validation)
-		await c.env.OAUTH_KV.put(
-			`client:${clientId}`,
-			JSON.stringify({
-				client_id: clientId,
-				redirect_uris: normalizedRedirectUris,
-				created_at: new Date().toISOString(),
-			}),
-			{ expirationTtl: 365 * 24 * 60 * 60 } // 1 year
-		);
+    // Store client registration in KV (optional, for future validation)
+    await c.env.OAUTH_KV.put(
+      `client:${clientId}`,
+      JSON.stringify({
+        client_id: clientId,
+        redirect_uris: normalizedRedirectUris,
+        created_at: new Date().toISOString(),
+      }),
+      { expirationTtl: 365 * 24 * 60 * 60 }, // 1 year
+    );
 
-		// Return OAuth 2.1 registration response
-		return c.json({
-			client_id: clientId,
-			redirect_uris: normalizedRedirectUris,
-			grant_types: ["authorization_code"],
-			token_endpoint_auth_method: "none", // Public client
-		});
-	} catch (error) {
-		logError(c, "Client registration error", error);
-		return c.json(
-			{
-				error: "server_error",
-				error_description: "An error occurred during client registration",
-			},
-			500
-		);
-	}
+    // Return OAuth 2.1 registration response
+    return c.json({
+      client_id: clientId,
+      redirect_uris: normalizedRedirectUris,
+      grant_types: ["authorization_code"],
+      token_endpoint_auth_method: "none", // Public client
+    });
+  } catch (error) {
+    logError(c, "Client registration error", error);
+    return c.json(
+      {
+        error: "server_error",
+        error_description: "An error occurred during client registration",
+      },
+      500,
+    );
+  }
 });
 
 /**
@@ -910,7 +1056,7 @@ app.post("/register", async (c) => {
  * Deprecated route kept for compatibility
  */
 app.get("/logout", (c) => {
-	return c.text("Use POST /logout to log out securely.", 405);
+  return c.text("Use POST /logout to log out securely.", 405);
 });
 
 /**
@@ -918,58 +1064,67 @@ app.get("/logout", (c) => {
  * Clears user session and revokes issued access tokens
  */
 app.post("/logout", async (c) => {
-	const rateLimitResponse = await checkRateLimit(c, "logout", 30, 60);
-	if (rateLimitResponse) {
-		return rateLimitResponse;
-	}
+  const rateLimitResponse = await checkRateLimit(c, "logout", 30, 60);
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
 
-	if (!hasValidCsrf(c)) {
-		return c.json({ error: "Invalid CSRF token" }, 403);
-	}
+  if (!hasValidCsrf(c)) {
+    return c.json({ error: "Invalid CSRF token" }, 403);
+  }
 
-	const sessionToken = getCookie(c, "__Host-session");
+  const sessionToken = getCookie(c, "__Host-session");
 
-	if (sessionToken) {
-		await c.env.OAUTH_KV.delete(`session:${sessionToken}`);
+  if (sessionToken) {
+    await c.env.OAUTH_KV.delete(`session:${sessionToken}`);
 
-		let cursor: string | undefined;
-		do {
-			const listResult = await c.env.OAUTH_KV.list({
-				prefix: `session_access_token:${sessionToken}:`,
-				...(cursor !== undefined ? { cursor } : {}),
-			});
+    let cursor: string | undefined;
+    do {
+      const listResult = await c.env.OAUTH_KV.list({
+        prefix: `session_access_token:${sessionToken}:`,
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
 
-			for (const key of listResult.keys) {
-				const accessToken = key.name.slice(`session_access_token:${sessionToken}:`.length);
-				await c.env.OAUTH_KV.delete(`access_token:${accessToken}`);
-				await c.env.OAUTH_KV.delete(key.name);
-			}
+      for (const key of listResult.keys) {
+        const accessToken = key.name.slice(
+          `session_access_token:${sessionToken}:`.length,
+        );
+        await c.env.OAUTH_KV.delete(`access_token:${accessToken}`);
+        await c.env.OAUTH_KV.delete(key.name);
+      }
 
-			cursor = listResult.list_complete ? undefined : listResult.cursor;
-		} while (cursor);
-	}
+      cursor = listResult.list_complete ? undefined : listResult.cursor;
+    } while (cursor);
+  }
 
-	const response = c.text("Logged out successfully");
-	appendClearedAuthCookies(response);
-	return response;
+  const response = c.text("Logged out successfully");
+  appendClearedAuthCookies(response);
+  return response;
 });
 
 /**
  * Helper: Get authenticated session data
  */
 async function getAuthenticatedSession(c: any): Promise<Props | null> {
-	const sessionToken = getCookie(c, "__Host-session");
+  const sessionToken = getCookie(c, "__Host-session");
 
-	if (!sessionToken) {
-		return null;
-	}
+  if (!sessionToken) {
+    return null;
+  }
 
-	const sessionData = await c.env.OAUTH_KV.get(`session:${sessionToken}`, "json");
-	if (!sessionData || typeof sessionData !== "object" || !("login" in sessionData)) {
-		return null;
-	}
+  const sessionData = await c.env.OAUTH_KV.get(
+    `session:${sessionToken}`,
+    "json",
+  );
+  if (
+    !sessionData ||
+    typeof sessionData !== "object" ||
+    !("login" in sessionData)
+  ) {
+    return null;
+  }
 
-	return sessionData as Props;
+  return sessionData as Props;
 }
 
 /**
@@ -977,31 +1132,31 @@ async function getAuthenticatedSession(c: any): Promise<Props | null> {
  * API key management page
  */
 app.get("/setup", async (c) => {
-	const session = await getAuthenticatedSession(c);
+  const session = await getAuthenticatedSession(c);
 
-	if (!session) {
-		// Redirect to login if not authenticated
-		const url = new URL(c.req.url);
-		const authorizeUrl = new URL("/authorize", url.origin);
-		authorizeUrl.searchParams.set("client_id", "setup");
-		authorizeUrl.searchParams.set("redirect_uri", `${url.origin}/setup`);
-		authorizeUrl.searchParams.set("state", "setup");
-		return c.redirect(authorizeUrl.toString());
-	}
+  if (!session) {
+    // Redirect to login if not authenticated
+    const url = new URL(c.req.url);
+    const authorizeUrl = new URL("/authorize", url.origin);
+    authorizeUrl.searchParams.set("client_id", "setup");
+    authorizeUrl.searchParams.set("redirect_uri", `${url.origin}/setup`);
+    authorizeUrl.searchParams.set("state", "setup");
+    return c.redirect(authorizeUrl.toString());
+  }
 
-	// Check if user has an API key configured
-	const hasApiKey = await getUserApiKey(
-		c.env.OAUTH_KV,
-		c.env.COOKIE_ENCRYPTION_KEY,
-		session.login
-	);
+  // Check if user has an API key configured
+  const hasApiKey = await getUserApiKey(
+    c.env.OAUTH_KV,
+    c.env.COOKIE_ENCRYPTION_KEY,
+    session.login,
+  );
 
-	const safeUserName = escapeHtml(session.name || session.login);
-	const safeUserLogin = escapeHtml(session.login);
-	const csrfToken = getCookie(c, CSRF_COOKIE_NAME) || generateState();
-	const safeCsrfToken = escapeHtml(csrfToken);
+  const safeUserName = escapeHtml(session.name || session.login);
+  const safeUserLogin = escapeHtml(session.login);
+  const csrfToken = getCookie(c, CSRF_COOKIE_NAME) || generateState();
+  const safeCsrfToken = escapeHtml(csrfToken);
 
-	const html = `
+  const html = `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1281,11 +1436,15 @@ app.get("/setup", async (c) => {
 			</div>
 		</form>
 
-		${hasApiKey ? `
+		${
+      hasApiKey
+        ? `
 		<div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e0e0e0;">
 			<button id="deleteBtn" class="btn-danger" style="width: 100%;">Delete API Key</button>
 		</div>
-		` : ""}
+		`
+        : ""
+    }
 	</div>
 
 	<script>
@@ -1445,15 +1604,18 @@ app.get("/setup", async (c) => {
 </html>
 	`;
 
-	const response = c.html(html);
-	if (!getCookie(c, CSRF_COOKIE_NAME)) {
-		response.headers.append(
-			"Set-Cookie",
-			buildCookie(CSRF_COOKIE_NAME, csrfToken, { httpOnly: false, maxAge: SESSION_TTL_SECONDS })
-		);
-	}
+  const response = c.html(html);
+  if (!getCookie(c, CSRF_COOKIE_NAME)) {
+    response.headers.append(
+      "Set-Cookie",
+      buildCookie(CSRF_COOKIE_NAME, csrfToken, {
+        httpOnly: false,
+        maxAge: SESSION_TTL_SECONDS,
+      }),
+    );
+  }
 
-	return response;
+  return response;
 });
 
 /**
@@ -1461,47 +1623,57 @@ app.get("/setup", async (c) => {
  * Test if a Hevy API key is valid
  */
 app.post("/api/test-key", async (c) => {
-	const rateLimitResponse = await checkRateLimit(c, "api_test_key", 20, 60);
-	if (rateLimitResponse) {
-		return rateLimitResponse;
-	}
+  const rateLimitResponse = await checkRateLimit(c, "api_test_key", 20, 60);
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
 
-	const session = await getAuthenticatedSession(c);
-	if (!session) {
-		return c.json({ error: "Unauthorized" }, 401);
-	}
+  const session = await getAuthenticatedSession(c);
+  if (!session) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
 
-	if (!hasValidCsrf(c)) {
-		return c.json({ error: "Invalid CSRF token" }, 403);
-	}
+  if (!hasValidCsrf(c)) {
+    return c.json({ error: "Invalid CSRF token" }, 403);
+  }
 
-	let body: unknown;
-	try {
-		body = await c.req.json();
-	} catch {
-		return c.json({ error: "invalid_json", message: "Request body must be valid JSON." }, 400);
-	}
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(
+      { error: "invalid_json", message: "Request body must be valid JSON." },
+      400,
+    );
+  }
 
-	const parseResult = TestKeyBodySchema.safeParse(body);
-	if (!parseResult.success) {
-		return c.json({ error: "invalid_request", message: parseResult.error.issues[0]?.message ?? "Invalid request body." }, 400);
-	}
+  const parseResult = TestKeyBodySchema.safeParse(body);
+  if (!parseResult.success) {
+    return c.json(
+      {
+        error: "invalid_request",
+        message:
+          parseResult.error.issues[0]?.message ?? "Invalid request body.",
+      },
+      400,
+    );
+  }
 
-	const { apiKey } = parseResult.data;
+  const { apiKey } = parseResult.data;
 
-	try {
-		// Test the API key by making a simple request
-		const client = new HevyClient({ apiKey });
-		await client.getWorkouts({ pageSize: 1 });
+  try {
+    // Test the API key by making a simple request
+    const client = new HevyClient({ apiKey });
+    await client.getWorkouts({ pageSize: 1 });
 
-		return c.json({ valid: true });
-	} catch (error) {
-		const requestId = logError(c, "API key test error", error);
-		return c.json(
-			{ error: "API key validation failed", request_id: requestId },
-			400
-		);
-	}
+    return c.json({ valid: true });
+  } catch (error) {
+    const requestId = logError(c, "API key test error", error);
+    return c.json(
+      { error: "API key validation failed", request_id: requestId },
+      400,
+    );
+  }
 });
 
 /**
@@ -1509,55 +1681,65 @@ app.post("/api/test-key", async (c) => {
  * Save user's Hevy API key
  */
 app.post("/api/save-key", async (c) => {
-	const rateLimitResponse = await checkRateLimit(c, "api_save_key", 20, 60);
-	if (rateLimitResponse) {
-		return rateLimitResponse;
-	}
+  const rateLimitResponse = await checkRateLimit(c, "api_save_key", 20, 60);
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
 
-	const session = await getAuthenticatedSession(c);
-	if (!session) {
-		return c.json({ error: "Unauthorized" }, 401);
-	}
+  const session = await getAuthenticatedSession(c);
+  if (!session) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
 
-	if (!hasValidCsrf(c)) {
-		return c.json({ error: "Invalid CSRF token" }, 403);
-	}
+  if (!hasValidCsrf(c)) {
+    return c.json({ error: "Invalid CSRF token" }, 403);
+  }
 
-	let body: unknown;
-	try {
-		body = await c.req.json();
-	} catch {
-		return c.json({ error: "invalid_json", message: "Request body must be valid JSON." }, 400);
-	}
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(
+      { error: "invalid_json", message: "Request body must be valid JSON." },
+      400,
+    );
+  }
 
-	const parseResult = SaveKeyBodySchema.safeParse(body);
-	if (!parseResult.success) {
-		return c.json({ error: "invalid_request", message: parseResult.error.issues[0]?.message ?? "Invalid request body." }, 400);
-	}
+  const parseResult = SaveKeyBodySchema.safeParse(body);
+  if (!parseResult.success) {
+    return c.json(
+      {
+        error: "invalid_request",
+        message:
+          parseResult.error.issues[0]?.message ?? "Invalid request body.",
+      },
+      400,
+    );
+  }
 
-	const { apiKey } = parseResult.data;
+  const { apiKey } = parseResult.data;
 
-	try {
-		// Validate the API key first
-		const client = new HevyClient({ apiKey });
-		await client.getWorkouts({ pageSize: 1 });
+  try {
+    // Validate the API key first
+    const client = new HevyClient({ apiKey });
+    await client.getWorkouts({ pageSize: 1 });
 
-		// Store encrypted API key in KV
-		await setUserApiKey(
-			c.env.OAUTH_KV,
-			c.env.COOKIE_ENCRYPTION_KEY,
-			session.login,
-			apiKey
-		);
+    // Store encrypted API key in KV
+    await setUserApiKey(
+      c.env.OAUTH_KV,
+      c.env.COOKIE_ENCRYPTION_KEY,
+      session.login,
+      apiKey,
+    );
 
-		return c.json({ success: true });
-	} catch (error) {
-		const requestId = logError(c, "API key save error", error);
-		return c.json(
-			{ error: "Failed to save API key", request_id: requestId },
-			400
-		);
-	}
+    return c.json({ success: true });
+  } catch (error) {
+    const requestId = logError(c, "API key save error", error);
+    return c.json(
+      { error: "Failed to save API key", request_id: requestId },
+      400,
+    );
+  }
 });
 
 /**
@@ -1565,30 +1747,30 @@ app.post("/api/save-key", async (c) => {
  * Get API key status
  */
 app.get("/api/get-key", async (c) => {
-	const session = await getAuthenticatedSession(c);
-	if (!session) {
-		return c.json({ error: "Unauthorized" }, 401);
-	}
+  const session = await getAuthenticatedSession(c);
+  if (!session) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
 
-	try {
-		const apiKey = await getUserApiKey(
-			c.env.OAUTH_KV,
-			c.env.COOKIE_ENCRYPTION_KEY,
-			session.login
-		);
+  try {
+    const apiKey = await getUserApiKey(
+      c.env.OAUTH_KV,
+      c.env.COOKIE_ENCRYPTION_KEY,
+      session.login,
+    );
 
-		if (!apiKey) {
-			return c.json({ configured: false });
-		}
+    if (!apiKey) {
+      return c.json({ configured: false });
+    }
 
-		return c.json({
-			configured: true,
-			maskedKey: maskApiKey(apiKey),
-		});
-	} catch (error) {
-		logError(c, "API key retrieval error", error);
-		return c.json({ error: "Failed to retrieve API key status" }, 500);
-	}
+    return c.json({
+      configured: true,
+      maskedKey: maskApiKey(apiKey),
+    });
+  } catch (error) {
+    logError(c, "API key retrieval error", error);
+    return c.json({ error: "Failed to retrieve API key status" }, 500);
+  }
 });
 
 /**
@@ -1596,28 +1778,27 @@ app.get("/api/get-key", async (c) => {
  * Delete user's API key
  */
 app.delete("/api/delete-key", async (c) => {
-	const rateLimitResponse = await checkRateLimit(c, "api_delete_key", 20, 60);
-	if (rateLimitResponse) {
-		return rateLimitResponse;
-	}
+  const rateLimitResponse = await checkRateLimit(c, "api_delete_key", 20, 60);
+  if (rateLimitResponse) {
+    return rateLimitResponse;
+  }
 
-	const session = await getAuthenticatedSession(c);
-	if (!session) {
-		return c.json({ error: "Unauthorized" }, 401);
-	}
+  const session = await getAuthenticatedSession(c);
+  if (!session) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
 
-	if (!hasValidCsrf(c)) {
-		return c.json({ error: "Invalid CSRF token" }, 403);
-	}
+  if (!hasValidCsrf(c)) {
+    return c.json({ error: "Invalid CSRF token" }, 403);
+  }
 
-	try {
-		await deleteUserApiKey(c.env.OAUTH_KV, session.login);
-		return c.json({ success: true });
-	} catch (error) {
-		logError(c, "API key deletion error", error);
-		return c.json({ error: "Failed to delete API key" }, 500);
-	}
+  try {
+    await deleteUserApiKey(c.env.OAUTH_KV, session.login);
+    return c.json({ success: true });
+  } catch (error) {
+    logError(c, "API key deletion error", error);
+    return c.json({ error: "Failed to delete API key" }, 500);
+  }
 });
 
 export default app;
-
