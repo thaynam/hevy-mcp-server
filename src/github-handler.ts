@@ -111,6 +111,7 @@ async function createS256CodeChallenge(codeVerifier: string): Promise<string> {
 }
 
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+const REFRESH_TOKEN_TTL_SECONDS = 365 * 24 * 60 * 60; // 1 year
 const CSRF_COOKIE_NAME = "__Host-csrf_token";
 
 function parseCookies(
@@ -337,7 +338,7 @@ app.get("/.well-known/oauth-authorization-server", (c) => {
     registration_endpoint: `${baseUrl}/register`,
     scopes_supported: ["mcp"],
     response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
     token_endpoint_auth_methods_supported: ["none"], // Public client
     code_challenge_methods_supported: ["S256"], // PKCE support
     revocation_endpoint_auth_methods_supported: ["none"],
@@ -775,17 +776,141 @@ app.post("/token", async (c) => {
 
     const grantType = grantTypeResult.data;
 
-    // Check grant_type before validating other required fields
-    if (grantType !== "authorization_code") {
+    // Check grant_type
+    if (grantType !== "authorization_code" && grantType !== "refresh_token") {
       return c.json(
         {
           error: "unsupported_grant_type",
-          error_description: "Only authorization_code grant type is supported",
+          error_description:
+            "Supported grant types: authorization_code, refresh_token",
         },
         400,
       );
     }
 
+    // --- Handle refresh_token grant ---
+    if (grantType === "refresh_token") {
+      const rawRefreshToken = formData.get("refresh_token") ?? undefined;
+      const rawClientId = formData.get("client_id") ?? undefined;
+
+      if (
+        !rawRefreshToken ||
+        typeof rawRefreshToken !== "string" ||
+        !rawClientId ||
+        typeof rawClientId !== "string"
+      ) {
+        return c.json(
+          {
+            error: "invalid_request",
+            error_description: "Missing refresh_token or client_id",
+          },
+          400,
+        );
+      }
+
+      // Retrieve and consume refresh token (single-use / rotation)
+      const kvKey = `refresh_token:${rawRefreshToken}`;
+      const refreshData = await c.env.OAUTH_KV.get(kvKey, "json");
+      if (!refreshData || typeof refreshData !== "object") {
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "Refresh token is invalid or expired",
+          },
+          400,
+        );
+      }
+
+      const {
+        sessionToken,
+        clientId: storedClientId,
+      } = refreshData as {
+        sessionToken: string;
+        clientId: string;
+      };
+
+      if (storedClientId !== rawClientId) {
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "Client mismatch",
+          },
+          400,
+        );
+      }
+
+      // Verify the session still exists
+      const sessionData = await c.env.OAUTH_KV.get(
+        `session:${sessionToken}`,
+        "json",
+      );
+      if (!sessionData || typeof sessionData !== "object") {
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "Session expired",
+          },
+          400,
+        );
+      }
+
+      // Delete old refresh token and its cross-reference (single-use)
+      await c.env.OAUTH_KV.delete(kvKey);
+      await c.env.OAUTH_KV.delete(
+        `session_refresh_token:${sessionToken}:${rawRefreshToken}`,
+      );
+
+      // Refresh the session TTL so it doesn't expire while the refresh token is valid
+      await c.env.OAUTH_KV.put(
+        `session:${sessionToken}`,
+        JSON.stringify(sessionData),
+        { expirationTtl: SESSION_TTL_SECONDS },
+      );
+
+      // Generate new access token
+      const accessToken = `${generateState()}${generateState()}`;
+      await c.env.OAUTH_KV.put(
+        `access_token:${accessToken}`,
+        JSON.stringify({
+          sessionToken,
+          clientId: storedClientId,
+          issued_at: new Date().toISOString(),
+        }),
+        { expirationTtl: SESSION_TTL_SECONDS },
+      );
+      await c.env.OAUTH_KV.put(
+        `session_access_token:${sessionToken}:${accessToken}`,
+        "1",
+        { expirationTtl: SESSION_TTL_SECONDS },
+      );
+
+      // Issue new refresh token (rotation)
+      const newRefreshToken = `${generateState()}${generateState()}`;
+      await c.env.OAUTH_KV.put(
+        `refresh_token:${newRefreshToken}`,
+        JSON.stringify({
+          sessionToken,
+          clientId: storedClientId,
+          created_at: new Date().toISOString(),
+        }),
+        { expirationTtl: REFRESH_TOKEN_TTL_SECONDS },
+      );
+      await c.env.OAUTH_KV.put(
+        `session_refresh_token:${sessionToken}:${newRefreshToken}`,
+        "1",
+        { expirationTtl: REFRESH_TOKEN_TTL_SECONDS },
+      );
+
+      return c.json({
+        access_token: accessToken,
+        token_type: "Bearer",
+        expires_in: SESSION_TTL_SECONDS,
+        scope: "mcp",
+        refresh_token: newRefreshToken,
+      });
+    }
+
+    // --- Handle authorization_code grant ---
     const codeResult = TokenCodeSchema.safeParse(rawCode);
     const redirectUriResult = TokenRedirectUriSchema.safeParse(rawRedirectUri);
     const clientIdResult = TokenClientIdSchema.safeParse(rawClientId);
@@ -942,12 +1067,30 @@ app.post("/token", async (c) => {
       },
     );
 
-    // Return OAuth 2.1 token response
+    // Generate refresh token
+    const refreshToken = `${generateState()}${generateState()}`;
+    await c.env.OAUTH_KV.put(
+      `refresh_token:${refreshToken}`,
+      JSON.stringify({
+        sessionToken,
+        clientId: storedClientId,
+        created_at: new Date().toISOString(),
+      }),
+      { expirationTtl: REFRESH_TOKEN_TTL_SECONDS },
+    );
+    await c.env.OAUTH_KV.put(
+      `session_refresh_token:${sessionToken}:${refreshToken}`,
+      "1",
+      { expirationTtl: REFRESH_TOKEN_TTL_SECONDS },
+    );
+
+    // Return OAuth 2.1 token response with refresh token
     return c.json({
       access_token: accessToken,
       token_type: "Bearer",
       expires_in: SESSION_TTL_SECONDS,
       scope: "mcp",
+      refresh_token: refreshToken,
     });
   } catch (error) {
     logError(c, "Token endpoint error", error);
@@ -1078,6 +1221,7 @@ app.post("/logout", async (c) => {
   if (sessionToken) {
     await c.env.OAUTH_KV.delete(`session:${sessionToken}`);
 
+    // Revoke all access tokens for this session
     let cursor: string | undefined;
     do {
       const listResult = await c.env.OAUTH_KV.list({
@@ -1095,6 +1239,25 @@ app.post("/logout", async (c) => {
 
       cursor = listResult.list_complete ? undefined : listResult.cursor;
     } while (cursor);
+
+    // Revoke all refresh tokens for this session
+    let rtCursor: string | undefined;
+    do {
+      const listResult = await c.env.OAUTH_KV.list({
+        prefix: `session_refresh_token:${sessionToken}:`,
+        ...(rtCursor !== undefined ? { cursor: rtCursor } : {}),
+      });
+
+      for (const key of listResult.keys) {
+        const refreshToken = key.name.slice(
+          `session_refresh_token:${sessionToken}:`.length,
+        );
+        await c.env.OAUTH_KV.delete(`refresh_token:${refreshToken}`);
+        await c.env.OAUTH_KV.delete(key.name);
+      }
+
+      rtCursor = listResult.list_complete ? undefined : listResult.cursor;
+    } while (rtCursor);
   }
 
   const response = c.text("Logged out successfully");
