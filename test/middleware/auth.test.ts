@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+
+// Mock key-storage so we don't need real AES-GCM encryption in tests
+vi.mock("../../src/lib/key-storage.js", () => ({
+  decryptApiKey: vi.fn().mockResolvedValue("decrypted-hevy-api-key"),
+}));
+
 import { bearerAuth } from "../../src/middleware/auth.js";
+import { decryptApiKey } from "../../src/lib/key-storage.js";
 
 // Mock the KV namespace
 const mockKV = {
@@ -19,9 +26,13 @@ const VALID_TOKEN_C =
 const VALID_TOKEN_D =
   "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
+const TEST_ENCRYPTION_KEY = "a".repeat(64); // 64 hex chars for AES-256
+
 describe("Bearer Auth Middleware", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset the mock to default behavior
+    (decryptApiKey as ReturnType<typeof vi.fn>).mockResolvedValue("decrypted-hevy-api-key");
   });
 
   function createMockContext(request: Request) {
@@ -30,26 +41,25 @@ describe("Bearer Auth Middleware", () => {
         header: (name: string) => request.headers.get(name),
         url: request.url,
       },
-      env: { OAUTH_KV: mockKV },
+      env: { OAUTH_KV: mockKV, COOKIE_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY },
       set: vi.fn(),
       json: vi.fn().mockReturnValue(new Response()),
     };
   }
 
   it("should pass through with valid access token mapped to a valid session", async () => {
-    const mockProps = {
-      login: "testuser",
-      baseUrl: "http://localhost",
-      accessToken: "github-access-token",
+    // Session now stores { hevyApiKey: encryptedString, createdAt: string }
+    const mockSession = {
+      hevyApiKey: "encrypted-api-key-base64",
+      createdAt: new Date().toISOString(),
     };
 
     mockKV.get
       .mockResolvedValueOnce({
         sessionToken: "session-123",
         issued_at: new Date(Date.now() - 1000).toISOString(),
-        clientId: "test-client",
       })
-      .mockResolvedValueOnce(mockProps);
+      .mockResolvedValueOnce(mockSession);
 
     const request = new Request("http://localhost/mcp", {
       method: "POST",
@@ -71,7 +81,16 @@ describe("Bearer Auth Middleware", () => {
       "session:session-123",
       "json",
     );
-    expect(mockContext.set).toHaveBeenCalledWith("props", mockProps);
+    // decryptApiKey should have been called with the encrypted key and encryption key
+    expect(decryptApiKey).toHaveBeenCalledWith(
+      "encrypted-api-key-base64",
+      TEST_ENCRYPTION_KEY,
+    );
+    // Props should match new shape: { hevyApiKey, baseUrl }
+    expect(mockContext.set).toHaveBeenCalledWith("props", {
+      hevyApiKey: "decrypted-hevy-api-key",
+      baseUrl: "http://localhost",
+    });
     expect(next).toHaveBeenCalled();
   });
 
@@ -187,6 +206,72 @@ describe("Bearer Auth Middleware", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
+  it("should return 401 when session is missing hevyApiKey", async () => {
+    mockKV.get
+      .mockResolvedValueOnce({
+        sessionToken: "session-no-key",
+        issued_at: new Date(Date.now() - 1000).toISOString(),
+      })
+      .mockResolvedValueOnce({
+        createdAt: new Date().toISOString(),
+        // hevyApiKey is missing
+      });
+
+    const request = new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${VALID_TOKEN_C}` },
+    });
+
+    const mockContext = createMockContext(request);
+    const next = vi.fn();
+
+    await bearerAuth(mockContext as any, next);
+
+    expect(mockContext.json).toHaveBeenCalledWith(
+      {
+        error: "unauthorized",
+        message: "Session missing API key.",
+      },
+      401,
+    );
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("should return 401 when decryption fails", async () => {
+    (decryptApiKey as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("Decryption failed"),
+    );
+
+    mockKV.get
+      .mockResolvedValueOnce({
+        sessionToken: "session-bad-decrypt",
+        issued_at: new Date(Date.now() - 1000).toISOString(),
+      })
+      .mockResolvedValueOnce({
+        hevyApiKey: "corrupted-encrypted-data",
+        createdAt: new Date().toISOString(),
+      });
+
+    const request = new Request("http://localhost/mcp", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${VALID_TOKEN_C}` },
+    });
+
+    const mockContext = createMockContext(request);
+    const next = vi.fn();
+
+    await bearerAuth(mockContext as any, next);
+
+    expect(mockContext.json).toHaveBeenCalledWith(
+      {
+        error: "unauthorized",
+        message: "Failed to decrypt session data.",
+      },
+      401,
+    );
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it("should handle KV storage errors", async () => {
     // Provide valid initial data, error happens on session lookup
     mockKV.get
@@ -245,15 +330,11 @@ describe("Bearer Auth Middleware", () => {
 
       await bearerAuth(mockContext as any, next);
 
-      // KV should NOT be called — we bypassed it
+      // KV should NOT be called -- we bypassed it
       expect(mockKV.get).not.toHaveBeenCalled();
 
-      // Props should carry the key directly
+      // Props should carry the key directly (new shape, no login/name/email)
       expect(mockContext.set).toHaveBeenCalledWith("props", {
-        login: "__header_auth__",
-        name: "",
-        email: "",
-        accessToken: "",
         hevyApiKey: "test-athlete-hevy-key-123",
       });
 
@@ -262,10 +343,10 @@ describe("Bearer Auth Middleware", () => {
     });
 
     it("should fall through to Bearer validation when X-Hevy-API-Key is absent", async () => {
-      // No X-Hevy-API-Key header — should hit normal Bearer validation
+      // No X-Hevy-API-Key header -- should hit normal Bearer validation
       const request = new Request("http://localhost/mcp", {
         method: "POST",
-        // No X-Hevy-API-Key — no Authorization either → should return 401
+        // No X-Hevy-API-Key -- no Authorization either -> should return 401
       });
 
       const mockContext = createMockContext(request);

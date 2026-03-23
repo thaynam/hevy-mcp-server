@@ -1,8 +1,10 @@
 import { createMiddleware } from "hono/factory";
+import { decryptApiKey } from "../lib/key-storage.js";
 import type { Props } from "../utils.js";
 
 interface Env {
   OAUTH_KV: KVNamespace;
+  COOKIE_ENCRYPTION_KEY: string;
 }
 
 interface Variables {
@@ -22,21 +24,15 @@ export const bearerAuth = createMiddleware<{
   Variables: Variables;
 }>(async (c, next) => {
   // Fast-path: FitCrew backend-to-server calls pass the Hevy API key directly
-  // in X-Hevy-API-Key, bypassing the GitHub OAuth / KV lookup entirely.
-  // This is intentional — FitCrew manages its own per-athlete key storage.
+  // in X-Hevy-API-Key, bypassing the OAuth / KV lookup entirely.
   const hevyKey = c.req.header("X-Hevy-API-Key");
   if (hevyKey) {
     c.set("props", {
-      login: "__header_auth__",
-      name: "",
-      email: "",
-      accessToken: "",
       hevyApiKey: hevyKey,
     });
     await next();
     return;
   }
-  // ... existing Bearer token validation continues below unchanged
 
   const authHeader = c.req.header("Authorization");
 
@@ -102,6 +98,7 @@ export const bearerAuth = createMiddleware<{
   if (tokenAge < 0 || tokenAge > MAX_TOKEN_AGE_MS) {
     return c.json({ error: "unauthorized", message: "Token expired." }, 401);
   }
+
   const sessionData = await c.env.OAUTH_KV.get(
     `session:${sessionToken}`,
     "json",
@@ -117,8 +114,40 @@ export const bearerAuth = createMiddleware<{
     );
   }
 
+  const session = sessionData as { hevyApiKey: string; createdAt: string };
+
+  if (!session.hevyApiKey) {
+    return c.json(
+      {
+        error: "unauthorized",
+        message: "Session missing API key.",
+      },
+      401,
+    );
+  }
+
+  // Decrypt the API key from the session
+  let hevyApiKey: string;
+  try {
+    hevyApiKey = await decryptApiKey(
+      session.hevyApiKey,
+      c.env.COOKIE_ENCRYPTION_KEY,
+    );
+  } catch {
+    return c.json(
+      {
+        error: "unauthorized",
+        message: "Failed to decrypt session data.",
+      },
+      401,
+    );
+  }
+
   // Store props in context variables
-  c.set("props", sessionData as Props);
+  c.set("props", {
+    hevyApiKey,
+    baseUrl: new URL(c.req.url).origin,
+  });
 
   await next();
 });

@@ -25,7 +25,6 @@ import {
 } from "./lib/transforms.js";
 import { handleError } from "./lib/errors.js";
 import type { Props } from "./utils.js";
-import { getUserApiKey } from "./lib/key-storage.js";
 
 // Define our MCP agent with Hevy API tools and OAuth support
 // Env is globally defined in worker-configuration.d.ts by Wrangler
@@ -41,9 +40,9 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
 
   async init() {
     // Check if user is authenticated
-    if (!this.props || !this.props.login) {
+    if (!this.props || !this.props.hevyApiKey) {
       const setupHint = this.props?.baseUrl
-        ? ` Visit ${this.props.baseUrl}/setup to get started.`
+        ? ` Visit ${this.props.baseUrl} to get started.`
         : " Visit your server URL to authenticate.";
       throw new Error(
         "Authentication required. Please authenticate via OAuth to use the Hevy MCP server." +
@@ -51,29 +50,9 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
       );
     }
 
-    // Prefer hevyApiKey from header auth (FitCrew passes it directly via X-Hevy-API-Key).
-    // Fall back to KV lookup for OAuth users.
-    const hevyApiKey =
-      this.props?.hevyApiKey ??
-      (await getUserApiKey(
-        this.env.OAUTH_KV,
-        this.env.COOKIE_ENCRYPTION_KEY,
-        this.props.login,
-      ));
-
-    if (!hevyApiKey) {
-      const setupUrl = this.props.baseUrl
-        ? `${this.props.baseUrl}/setup`
-        : "/setup (visit your server URL)";
-      throw new Error(
-        `Hevy API key not configured for user ${this.props.login}. ` +
-          `Please visit ${setupUrl} to configure your API key.`,
-      );
-    }
-
     // Initialize Hevy API client with user-specific API key
     this.client = new HevyClient({
-      apiKey: hevyApiKey,
+      apiKey: this.props.hevyApiKey,
     });
 
     // ============================================

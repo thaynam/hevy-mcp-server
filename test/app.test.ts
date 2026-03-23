@@ -2,13 +2,13 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { Hono } from "hono";
 
 // Mock the modules FIRST (before any variables that use them)
-vi.mock("../src/github-handler.js", () => {
+vi.mock("../src/oauth-handler.js", () => {
   const mockHandler = new Hono();
   mockHandler.get("/authorize", (c) => c.text("OAuth authorize"));
-  mockHandler.get("/callback", (c) => c.text("OAuth callback"));
+  mockHandler.post("/authorize", (c) => c.text("OAuth authorize POST"));
   mockHandler.post("/token", (c) => c.json({ access_token: "test" }));
   mockHandler.get("/.well-known/oauth-authorization-server", (c) =>
-    c.json({ issuer: "test" }),
+    c.json({ issuer: new URL(c.req.url).origin }),
   );
   return { default: mockHandler };
 });
@@ -248,8 +248,6 @@ describe("Hono App Integration", () => {
       const mockEnv = {
         OAUTH_KV: { get: vi.fn() } as any,
         MCP_OBJECT: { idFromName: vi.fn() } as any,
-        GITHUB_CLIENT_ID: "test-client-id",
-        GITHUB_CLIENT_SECRET: "test-secret",
         COOKIE_ENCRYPTION_KEY: "test-key",
       };
       const mockCtx = {} as any;
@@ -308,7 +306,8 @@ describe("Hono App Integration", () => {
 
       expect(response.status).toBe(200);
       const data = await response.json();
-      expect(data.issuer).toBe("test");
+      // The issuer should be the request's origin
+      expect(data.issuer).toBe("http://localhost");
     });
   });
 });

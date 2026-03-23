@@ -1,7 +1,6 @@
 import { Hono } from "hono";
-import type { Context } from "hono";
 import type { Props } from "./utils.js";
-import githubHandler from "./github-handler.js";
+import oauthHandler from "./oauth-handler.js";
 import { createMcpRoutes } from "./routes/mcp.js";
 import utilityRoutes from "./routes/utility.js";
 import { mcpHandlers } from "./mcp-handlers.js";
@@ -11,8 +10,6 @@ import { getCorsHeaders } from "./lib/cors.js";
 interface Env {
   MCP_OBJECT: DurableObjectNamespace;
   OAUTH_KV: KVNamespace;
-  GITHUB_CLIENT_ID: string;
-  GITHUB_CLIENT_SECRET: string;
   COOKIE_ENCRYPTION_KEY: string;
   ALLOWED_ORIGIN?: string;
 }
@@ -82,7 +79,7 @@ app.onError((err, c) => {
 });
 
 // Mount routes (order matters!)
-app.route("/", githubHandler); // OAuth/API routes (highest priority)
+app.route("/", oauthHandler); // OAuth routes (highest priority)
 app.route("/", createMcpRoutes(mcpHandlers)); // MCP endpoints
 app.route("/", utilityRoutes); // Health, home, etc.
 
