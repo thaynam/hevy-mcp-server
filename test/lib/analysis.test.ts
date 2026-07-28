@@ -6,6 +6,10 @@ import {
 	formatTrainingSummary,
 	analyzeProgressionDeltas,
 	computeExerciseOccurrence,
+	analyzePersonalRecords,
+	compareWorkouts,
+	findPreviousRoutineInstance,
+	analyzeMuscleBalance,
 } from "../../src/lib/analysis.js";
 
 describe("analysis - analyzeBodyProgress", () => {
@@ -321,5 +325,175 @@ describe("analysis - analyzeProgressionDeltas", () => {
 		expect(r.exercises).toEqual([]);
 		expect(r.scanned_workouts).toBe(7);
 		expect(r.truncated).toBe(true);
+	});
+});
+
+describe("analysis - analyzePersonalRecords", () => {
+	const workouts = [
+		{
+			id: "w1",
+			start_time: "2024-08-01T10:00:00Z",
+			exercises: [
+				{
+					exercise_template_id: "BENCH",
+					title: "Bench",
+					sets: [
+						{ type: "warmup", weight_kg: 200, reps: 1 }, // excluded even though "heavy"
+						{ type: "normal", weight_kg: 100, reps: 5 },
+					],
+				},
+			],
+		},
+		{
+			id: "w2",
+			start_time: "2024-08-05T10:00:00Z",
+			exercises: [
+				{
+					exercise_template_id: "BENCH",
+					sets: [{ type: "normal", weight_kg: 105, reps: 3 }],
+				},
+			],
+		},
+	];
+
+	it("finds per-exercise maxima, excluding warmup", () => {
+		const r = analyzePersonalRecords(workouts, {
+			scannedWorkouts: 2,
+			truncated: false,
+		});
+		const bench = r.records[0];
+		expect(bench.max_weight_kg?.value).toBe(105);
+		expect(bench.max_weight_kg?.workout_id).toBe("w2");
+		expect(bench.max_reps?.value).toBe(5); // from the 100×5 set
+		// best 1RM = max(100*(1+5/30)=116.67, 105*(1+3/30)=115.5) = 116.67
+		expect(bench.best_estimated_1rm_kg?.value).toBe(116.67);
+	});
+
+	it("can restrict to a single template", () => {
+		const r = analyzePersonalRecords(
+			[
+				...workouts,
+				{
+					id: "w3",
+					start_time: "2024-08-06T10:00:00Z",
+					exercises: [{ exercise_template_id: "SQUAT", sets: [{ type: "normal", weight_kg: 150, reps: 5 }] }],
+				},
+			],
+			{ scannedWorkouts: 3, truncated: false, templateId: "BENCH" },
+		);
+		expect(r.records).toHaveLength(1);
+		expect(r.records[0].exercise_template_id).toBe("BENCH");
+	});
+});
+
+describe("analysis - compareWorkouts", () => {
+	const a = {
+		id: "A",
+		start_time: "2024-08-10T10:00:00Z",
+		end_time: "2024-08-10T11:00:00Z", // 3600s
+		exercises: [
+			{ exercise_template_id: "BENCH", title: "Bench", sets: [{ type: "warmup", weight_kg: 60, reps: 10 }, { type: "normal", weight_kg: 100, reps: 5 }] },
+			{ exercise_template_id: "ROW", sets: [{ type: "normal", weight_kg: 80, reps: 10 }] },
+		],
+	};
+	const b = {
+		id: "B",
+		start_time: "2024-08-03T10:00:00Z",
+		end_time: "2024-08-03T10:45:00Z", // 2700s
+		exercises: [
+			{ exercise_template_id: "BENCH", sets: [{ type: "normal", weight_kg: 95, reps: 5 }] },
+			{ exercise_template_id: "SQUAT", sets: [{ type: "normal", weight_kg: 140, reps: 5 }] },
+		],
+	};
+
+	it("returns raw components and exercise presence, warmup excluded", () => {
+		const r = compareWorkouts(a, b);
+		expect(r.a.tonnage_kg).toBe(1300); // 100*5 + 80*10 (warmup 60*10 excluded)
+		expect(r.b.tonnage_kg).toBe(1175); // 95*5 + 140*5
+		expect(r.delta.tonnage_kg).toBe(125);
+		expect(r.a.duration_seconds).toBe(3600);
+		expect(r.delta.duration_seconds).toBe(900);
+		expect(r.exercises.in_both.map((e) => e.exercise_template_id)).toEqual(["BENCH"]);
+		expect(r.exercises.only_in_a.map((e) => e.exercise_template_id)).toEqual(["ROW"]);
+		expect(r.exercises.only_in_b.map((e) => e.exercise_template_id)).toEqual(["SQUAT"]);
+	});
+
+	it("returns null duration deltas when a timestamp is missing", () => {
+		const r = compareWorkouts({ id: "A", start_time: "2024-08-10T10:00:00Z", exercises: [] }, b);
+		expect(r.a.duration_seconds).toBeNull();
+		expect(r.delta.duration_seconds).toBeNull();
+	});
+});
+
+describe("analysis - findPreviousRoutineInstance", () => {
+	const workouts = [
+		{ id: "w_new", routine_id: "R1", start_time: "2024-08-10T10:00:00Z" },
+		{ id: "w_other", routine_id: "R2", start_time: "2024-08-08T10:00:00Z" },
+		{ id: "w_prev", routine_id: "R1", start_time: "2024-08-03T10:00:00Z" },
+		{ id: "w_old", routine_id: "R1", start_time: "2024-07-27T10:00:00Z" },
+	];
+
+	it("returns the most recent instance as anchor and the one before as previous", () => {
+		const r = findPreviousRoutineInstance(workouts, "R1", {
+			scannedWorkouts: 4,
+			truncated: false,
+		});
+		expect(r.total_instances).toBe(3);
+		expect(r.anchor?.workout_id).toBe("w_new");
+		expect(r.previous?.workout_id).toBe("w_prev");
+	});
+
+	it("anchors on before_workout_id when given", () => {
+		const r = findPreviousRoutineInstance(workouts, "R1", {
+			scannedWorkouts: 4,
+			truncated: false,
+			beforeWorkoutId: "w_prev",
+		});
+		expect(r.anchor?.workout_id).toBe("w_prev");
+		expect(r.previous?.workout_id).toBe("w_old");
+	});
+
+	it("returns nulls when the routine has no instances", () => {
+		const r = findPreviousRoutineInstance(workouts, "NOPE", {
+			scannedWorkouts: 4,
+			truncated: false,
+		});
+		expect(r.total_instances).toBe(0);
+		expect(r.anchor).toBeNull();
+		expect(r.previous).toBeNull();
+	});
+});
+
+describe("analysis - analyzeMuscleBalance", () => {
+	const map = { BENCH: "chest", ROW: "upper_back", CURL: "biceps" };
+	const workouts = [
+		{
+			start_time: "2024-08-10T10:00:00Z",
+			exercises: [
+				{ exercise_template_id: "BENCH", sets: [{ type: "warmup", weight_kg: 60, reps: 10 }, { type: "normal", weight_kg: 100, reps: 5 }, { type: "normal", weight_kg: 100, reps: 5 }] },
+				{ exercise_template_id: "CUSTOM_UNMAPPED", sets: [{ type: "normal", weight_kg: 20, reps: 12 }] },
+			],
+		},
+		{
+			start_time: "2024-08-08T10:00:00Z",
+			exercises: [{ exercise_template_id: "ROW", sets: [{ type: "normal", weight_kg: 80, reps: 10 }] }],
+		},
+		// Outside the window:
+		{ start_time: "2024-06-01T10:00:00Z", exercises: [{ exercise_template_id: "CURL", sets: [{ type: "normal", weight_kg: 20, reps: 12 }] }] },
+	];
+
+	it("aggregates effective sets and volume per muscle group, excluding warmup", () => {
+		const r = analyzeMuscleBalance(workouts, map, "2024-08-01", { truncated: false });
+		const chest = r.by_muscle_group.find((g) => g.muscle_group === "chest");
+		expect(chest?.effective_sets).toBe(2); // warmup excluded
+		expect(chest?.total_volume_kg).toBe(1000);
+		expect(r.workouts_counted).toBe(2); // June workout outside window
+	});
+
+	it("counts unmapped exercises and excludes out-of-window data", () => {
+		const r = analyzeMuscleBalance(workouts, map, "2024-08-01", { truncated: false });
+		expect(r.unmapped_exercises).toBe(1);
+		// CURL (biceps) is in June, outside the window → not present
+		expect(r.by_muscle_group.find((g) => g.muscle_group === "biceps")).toBeUndefined();
 	});
 });

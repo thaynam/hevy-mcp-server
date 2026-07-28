@@ -39,6 +39,11 @@ import {
   formatTrainingSummary,
   analyzeProgressionDeltas,
   formatProgressionDeltas,
+  analyzePersonalRecords,
+  formatPersonalRecords,
+  compareWorkouts,
+  findPreviousRoutineInstance,
+  analyzeMuscleBalance,
 } from "./lib/analysis.js";
 import { filterExerciseTemplates } from "./lib/exercise-search.js";
 import { isNotFoundError } from "./lib/hevy-error-policy.js";
@@ -1378,6 +1383,246 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 type: "text",
                 text: formatProgressionDeltas(summary),
               },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,
+              },
+            ],
+            structuredContent: summary,
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "get_personal_records",
+      {
+        exercise_template_id: z
+          .string()
+          .optional()
+          .describe("Restrict to a single exercise template (default: all exercises)"),
+      },
+      async ({ exercise_template_id }) => {
+        try {
+          const MAX_PAGES = 20;
+          const pageSize = 10;
+          const workouts: any[] = [];
+          let page = 1;
+          let pageCount = 1;
+          let scannedAllPages = true;
+          while (page <= pageCount) {
+            if (page > MAX_PAGES) {
+              scannedAllPages = false;
+              break;
+            }
+            let result: any;
+            try {
+              result = await this.client.getWorkouts({ page, pageSize });
+            } catch (error) {
+              if (isNotFoundError(error)) break;
+              throw error;
+            }
+            workouts.push(...(result.workouts ?? []));
+            pageCount = result.page_count ?? page;
+            page++;
+          }
+
+          const summary = analyzePersonalRecords(workouts, {
+            scannedWorkouts: workouts.length,
+            truncated: !scannedAllPages,
+            ...(exercise_template_id ? { templateId: exercise_template_id } : {}),
+          });
+
+          return {
+            content: [
+              { type: "text", text: formatPersonalRecords(summary) },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,
+              },
+            ],
+            structuredContent: summary,
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "compare_workouts",
+      {
+        workout_id_a: z.string().describe("First workout ID"),
+        workout_id_b: z.string().describe("Second workout ID"),
+      },
+      async ({ workout_id_a, workout_id_b }) => {
+        try {
+          const [a, b] = await Promise.all([
+            this.client.getWorkout(workout_id_a),
+            this.client.getWorkout(workout_id_b),
+          ]);
+
+          const comparison = compareWorkouts(a, b);
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Comparison ${comparison.a.date} vs ${comparison.b.date}: tonnage ${comparison.a.tonnage_kg} vs ${comparison.b.tonnage_kg}kg (Δ ${comparison.delta.tonnage_kg}); effective sets ${comparison.a.effective_sets} vs ${comparison.b.effective_sets}; exercises in both ${comparison.exercises.in_both.length}, only A ${comparison.exercises.only_in_a.length}, only B ${comparison.exercises.only_in_b.length}.`,
+              },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(comparison, null, 2)}`,
+              },
+            ],
+            structuredContent: comparison,
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "get_previous_routine_instance",
+      {
+        routine_id: z.string().describe("The routine ID to find instances of"),
+        before_workout_id: z
+          .string()
+          .optional()
+          .describe(
+            "Anchor instance; returns the instance before it (default: the most recent instance)",
+          ),
+      },
+      async ({ routine_id, before_workout_id }) => {
+        try {
+          const MAX_PAGES = 20;
+          const pageSize = 10;
+          const workouts: any[] = [];
+          let page = 1;
+          let pageCount = 1;
+          let scannedAllPages = true;
+          while (page <= pageCount) {
+            if (page > MAX_PAGES) {
+              scannedAllPages = false;
+              break;
+            }
+            let result: any;
+            try {
+              result = await this.client.getWorkouts({ page, pageSize });
+            } catch (error) {
+              if (isNotFoundError(error)) break;
+              throw error;
+            }
+            workouts.push(...(result.workouts ?? []));
+            pageCount = result.page_count ?? page;
+            page++;
+          }
+
+          const summary = findPreviousRoutineInstance(workouts, routine_id, {
+            scannedWorkouts: workouts.length,
+            truncated: !scannedAllPages,
+            ...(before_workout_id ? { beforeWorkoutId: before_workout_id } : {}),
+          });
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Routine ${routine_id}: ${summary.total_instances} instance(s) found. Anchor: ${summary.anchor?.workout_id ?? "none"} (${summary.anchor?.date ?? "-"}). Previous: ${summary.previous?.workout_id ?? "none"} (${summary.previous?.date ?? "-"}).`,
+              },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,
+              },
+            ],
+            structuredContent: summary,
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "get_muscle_balance",
+      {
+        weeks: z
+          .number()
+          .int()
+          .min(1)
+          .max(52)
+          .optional()
+          .describe("Number of recent weeks to include (1-52)")
+          .default(4),
+      },
+      async ({ weeks }) => {
+        try {
+          const since = new Date(Date.now() - weeks * 7 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10);
+
+          // Catalog map: template_id -> primary_muscle_group (cached per session).
+          const catalog = await this.client.getAllExerciseTemplates();
+          const muscleGroupByTemplate: Record<string, string> = {};
+          for (const template of catalog) {
+            if (
+              typeof (template as any)?.id === "string" &&
+              typeof (template as any)?.primary_muscle_group === "string"
+            ) {
+              muscleGroupByTemplate[(template as any).id] = (
+                template as any
+              ).primary_muscle_group;
+            }
+          }
+
+          const MAX_PAGES = 20;
+          const pageSize = 10;
+          const workouts: any[] = [];
+          let page = 1;
+          let pageCount = 1;
+          let scannedAllPages = true;
+          while (page <= pageCount) {
+            if (page > MAX_PAGES) {
+              scannedAllPages = false;
+              break;
+            }
+            let result: any;
+            try {
+              result = await this.client.getWorkouts({ page, pageSize });
+            } catch (error) {
+              if (isNotFoundError(error)) break;
+              throw error;
+            }
+            workouts.push(...(result.workouts ?? []));
+            pageCount = result.page_count ?? page;
+            page++;
+          }
+
+          const summary = analyzeMuscleBalance(
+            workouts,
+            muscleGroupByTemplate,
+            since,
+            { truncated: !scannedAllPages },
+          );
+
+          const rows =
+            summary.by_muscle_group
+              .map(
+                (g) =>
+                  `${g.muscle_group}: ${g.effective_sets} sets, ${g.total_volume_kg}kg, ${g.exercise_count} exercise(s)`,
+              )
+              .join("\n") || "No mapped exercises in the window";
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Muscle-group distribution since ${since} (${summary.workouts_counted} workout(s), ${summary.unmapped_exercises} unmapped):`,
+              },
+              { type: "text", text: rows },
               {
                 type: "text",
                 text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,

@@ -9,6 +9,10 @@ import {
 	analyzeBodyProgress,
 	analyzeTrainingSummary,
 	analyzeProgressionDeltas,
+	analyzePersonalRecords,
+	compareWorkouts,
+	findPreviousRoutineInstance,
+	analyzeMuscleBalance,
 } from "../../src/lib/analysis.js";
 
 /** Parses a value against a tool's output shape (mirrors the SDK's validation). */
@@ -219,6 +223,62 @@ describe("output-schemas", () => {
 					truncated: false,
 				}).success,
 			).toBe(true);
+		});
+
+		it("get_personal_records", () => {
+			const r = analyzePersonalRecords(
+				[
+					{
+						id: "w1",
+						start_time: "2024-08-01T10:00:00Z",
+						exercises: [
+							{ exercise_template_id: "BENCH", title: "Bench", sets: [{ type: "normal", weight_kg: 100, reps: 5 }] },
+							{ exercise_template_id: "PLANK", sets: [{ type: "normal", reps: 60 }] },
+						],
+					},
+				],
+				{ scannedWorkouts: 1, truncated: false },
+			);
+			expect(parseOutput("get_personal_records", r).success).toBe(true);
+		});
+
+		it("compare_workouts", () => {
+			const r = compareWorkouts(
+				{
+					id: "A",
+					start_time: "2024-08-10T10:00:00Z",
+					end_time: "2024-08-10T11:00:00Z",
+					exercises: [{ exercise_template_id: "BENCH", title: "Bench", sets: [{ type: "normal", weight_kg: 100, reps: 5 }] }],
+				},
+				{
+					id: "B",
+					start_time: "2024-08-03T10:00:00Z",
+					exercises: [{ exercise_template_id: "SQUAT", sets: [{ type: "normal", weight_kg: 140, reps: 5 }] }],
+				},
+			);
+			expect(parseOutput("compare_workouts", r).success).toBe(true);
+		});
+
+		it("get_previous_routine_instance", () => {
+			const r = findPreviousRoutineInstance(
+				[
+					{ id: "w1", routine_id: "R1", start_time: "2024-08-10T10:00:00Z" },
+					{ id: "w2", routine_id: "R1", start_time: "2024-08-03T10:00:00Z" },
+				],
+				"R1",
+				{ scannedWorkouts: 2, truncated: false },
+			);
+			expect(parseOutput("get_previous_routine_instance", r).success).toBe(true);
+		});
+
+		it("get_muscle_balance", () => {
+			const r = analyzeMuscleBalance(
+				[{ start_time: "2024-08-10T10:00:00Z", exercises: [{ exercise_template_id: "BENCH", sets: [{ type: "normal", weight_kg: 100, reps: 5 }] }] }],
+				{ BENCH: "chest" },
+				"2024-08-01",
+				{ truncated: false },
+			);
+			expect(parseOutput("get_muscle_balance", r).success).toBe(true);
 		});
 	});
 

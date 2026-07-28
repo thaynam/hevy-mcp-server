@@ -498,6 +498,132 @@ export function analyzeProgressionDeltas(
 	};
 }
 
+// ── Personal records ─────────────────────────────────────────────────────────
+//
+// Fact-only maxima per exercise_template_id across scanned workouts. A "record"
+// is the maximum observed value — no judgment about whether it's meaningful.
+// Warmup sets excluded.
+
+export interface PersonalRecordEntry {
+	/** The record value (kg for weight/1RM, count for reps). */
+	value: number;
+	weight_kg: number | null;
+	reps: number | null;
+	date: string;
+	workout_id: string;
+}
+
+export interface ExercisePersonalRecords {
+	exercise_template_id: string;
+	exercise_title?: string;
+	max_weight_kg: PersonalRecordEntry | null;
+	best_estimated_1rm_kg: PersonalRecordEntry | null;
+	max_reps: PersonalRecordEntry | null;
+}
+
+export interface PersonalRecordsResult {
+	records: ExercisePersonalRecords[];
+	scanned_workouts: number;
+	truncated: boolean;
+}
+
+interface RecordAccumulator {
+	title?: string;
+	maxWeight: PersonalRecordEntry | null;
+	best1rm: PersonalRecordEntry | null;
+	maxReps: PersonalRecordEntry | null;
+}
+
+/**
+ * Finds per-exercise maxima (heaviest set, best Epley 1RM, most reps) across the
+ * given workouts, keyed by exercise_template_id. Warmup sets are excluded.
+ *
+ * @param options.templateId - Restrict to a single exercise template
+ */
+export function analyzePersonalRecords(
+	workouts: any[],
+	options: { scannedWorkouts: number; truncated: boolean; templateId?: string },
+): PersonalRecordsResult {
+	const groups = new Map<string, RecordAccumulator>();
+
+	for (const workout of workouts) {
+		const workoutId = typeof workout?.id === "string" ? workout.id : "";
+		const date = workoutStart(workout).slice(0, 10);
+		const exercises: any[] = Array.isArray(workout?.exercises)
+			? workout.exercises
+			: [];
+
+		for (const exercise of exercises) {
+			const templateId =
+				typeof exercise?.exercise_template_id === "string"
+					? exercise.exercise_template_id
+					: "";
+			if (options.templateId && templateId !== options.templateId) continue;
+
+			const group =
+				groups.get(templateId) ??
+				({ maxWeight: null, best1rm: null, maxReps: null } as RecordAccumulator);
+			if (typeof exercise?.title === "string") group.title = exercise.title;
+
+			const sets: any[] = Array.isArray(exercise?.sets) ? exercise.sets : [];
+			for (const set of sets.filter(isEffectiveSet)) {
+				const weight = numeric(set?.weight_kg);
+				const reps = numeric(set?.reps);
+				const base = { weight_kg: weight, reps, date, workout_id: workoutId };
+
+				if (weight !== null && (!group.maxWeight || weight > group.maxWeight.value)) {
+					group.maxWeight = { value: weight, ...base };
+				}
+				const e1rm = estimatedOneRepMax(weight, reps);
+				if (e1rm !== null && (!group.best1rm || e1rm > group.best1rm.value)) {
+					group.best1rm = { value: roundTo2(e1rm), ...base };
+				}
+				if (reps !== null && (!group.maxReps || reps > group.maxReps.value)) {
+					group.maxReps = { value: reps, ...base };
+				}
+			}
+
+			groups.set(templateId, group);
+		}
+	}
+
+	const records: ExercisePersonalRecords[] = [...groups.entries()].map(
+		([templateId, group]) => {
+			const entry: ExercisePersonalRecords = {
+				exercise_template_id: templateId,
+				max_weight_kg: group.maxWeight,
+				best_estimated_1rm_kg: group.best1rm,
+				max_reps: group.maxReps,
+			};
+			if (group.title !== undefined) entry.exercise_title = group.title;
+			return entry;
+		},
+	);
+
+	return {
+		records,
+		scanned_workouts: options.scannedWorkouts,
+		truncated: options.truncated,
+	};
+}
+
+export function formatPersonalRecords(result: PersonalRecordsResult): string {
+	if (result.records.length === 0) return "No exercises found to compute records.";
+	const lines: string[] = ["Personal records (maxima across scanned workouts):"];
+	for (const rec of result.records) {
+		const title = rec.exercise_title ?? rec.exercise_template_id;
+		const parts: string[] = [];
+		if (rec.max_weight_kg) parts.push(`max weight ${rec.max_weight_kg.value}kg (${rec.max_weight_kg.date})`);
+		if (rec.best_estimated_1rm_kg) parts.push(`est 1RM ${rec.best_estimated_1rm_kg.value}kg`);
+		if (rec.max_reps) parts.push(`max reps ${rec.max_reps.value}`);
+		lines.push(`${title}: ${parts.join(", ") || "no effective sets"}`);
+	}
+	if (result.truncated) {
+		lines.push(`(Note: only the first ${result.scanned_workouts} workouts were scanned; older records may exist.)`);
+	}
+	return lines.join("\n");
+}
+
 function formatTopSet(top: ProgressionTopSet | null): string {
 	if (!top) return "n/a";
 	return `${top.weight_kg}kg×${top.reps ?? "?"}`;
@@ -533,4 +659,289 @@ export function formatProgressionDeltas(result: ProgressionDeltasResult): string
 		);
 	}
 	return lines.join("\n");
+}
+
+// ── Workout comparison ───────────────────────────────────────────────────────
+//
+// Raw diff between two specific workouts. Components are returned separately —
+// never a single score (tonnage alone misleads) and never a "shorter/worse"
+// label. Warmup excluded. The caller decides whether the two are comparable.
+
+export interface WorkoutComparisonSide {
+	workout_id: string;
+	date: string;
+	/** Sum of weight_kg × reps over effective sets. */
+	tonnage_kg: number;
+	effective_sets: number;
+	duration_seconds: number | null;
+	/** Distinct exercise_template_ids present in the workout. */
+	exercise_template_ids: string[];
+}
+
+export interface ComparisonExerciseRef {
+	exercise_template_id: string;
+	exercise_title?: string;
+}
+
+export interface WorkoutComparisonResult {
+	a: WorkoutComparisonSide;
+	b: WorkoutComparisonSide;
+	delta: {
+		tonnage_kg: number;
+		effective_sets: number;
+		duration_seconds: number | null;
+	};
+	exercises: {
+		in_both: ComparisonExerciseRef[];
+		only_in_a: ComparisonExerciseRef[];
+		only_in_b: ComparisonExerciseRef[];
+	};
+}
+
+function workoutDurationSeconds(workout: any): number | null {
+	const start = workoutStart(workout);
+	const end = typeof workout?.end_time === "string" ? workout.end_time : "";
+	if (!start || !end) return null;
+	const startMs = Date.parse(start);
+	const endMs = Date.parse(end);
+	if (Number.isNaN(startMs) || Number.isNaN(endMs)) return null;
+	return Math.round((endMs - startMs) / 1000);
+}
+
+function comparisonSide(workout: any): WorkoutComparisonSide {
+	const exercises: any[] = Array.isArray(workout?.exercises)
+		? workout.exercises
+		: [];
+	let tonnage = 0;
+	let effectiveSets = 0;
+	const templateIds: string[] = [];
+
+	for (const exercise of exercises) {
+		const templateId =
+			typeof exercise?.exercise_template_id === "string"
+				? exercise.exercise_template_id
+				: "";
+		if (templateId && !templateIds.includes(templateId)) {
+			templateIds.push(templateId);
+		}
+		const sets: any[] = Array.isArray(exercise?.sets) ? exercise.sets : [];
+		for (const set of sets.filter(isEffectiveSet)) {
+			effectiveSets++;
+			const weight = numeric(set?.weight_kg);
+			const reps = numeric(set?.reps);
+			if (weight !== null && reps !== null) tonnage += weight * reps;
+		}
+	}
+
+	return {
+		workout_id: typeof workout?.id === "string" ? workout.id : "",
+		date: workoutStart(workout).slice(0, 10),
+		tonnage_kg: roundTo2(tonnage),
+		effective_sets: effectiveSets,
+		duration_seconds: workoutDurationSeconds(workout),
+		exercise_template_ids: templateIds,
+	};
+}
+
+/** Raw component-wise diff of two workouts. No composite score, no labels. */
+export function compareWorkouts(
+	workoutA: any,
+	workoutB: any,
+): WorkoutComparisonResult {
+	const a = comparisonSide(workoutA);
+	const b = comparisonSide(workoutB);
+
+	// Title lookup for the exercise presence lists.
+	const titles = new Map<string, string>();
+	for (const workout of [workoutA, workoutB]) {
+		const exs: any[] = Array.isArray(workout?.exercises)
+			? workout.exercises
+			: [];
+		for (const ex of exs) {
+			if (
+				typeof ex?.exercise_template_id === "string" &&
+				typeof ex?.title === "string"
+			) {
+				titles.set(ex.exercise_template_id, ex.title);
+			}
+		}
+	}
+	const ref = (templateId: string): ComparisonExerciseRef => {
+		const title = titles.get(templateId);
+		return title !== undefined
+			? { exercise_template_id: templateId, exercise_title: title }
+			: { exercise_template_id: templateId };
+	};
+
+	const setB = new Set(b.exercise_template_ids);
+	const setA = new Set(a.exercise_template_ids);
+
+	return {
+		a,
+		b,
+		delta: {
+			tonnage_kg: roundTo2(a.tonnage_kg - b.tonnage_kg),
+			effective_sets: a.effective_sets - b.effective_sets,
+			duration_seconds:
+				a.duration_seconds !== null && b.duration_seconds !== null
+					? a.duration_seconds - b.duration_seconds
+					: null,
+		},
+		exercises: {
+			in_both: a.exercise_template_ids.filter((t) => setB.has(t)).map(ref),
+			only_in_a: a.exercise_template_ids.filter((t) => !setB.has(t)).map(ref),
+			only_in_b: b.exercise_template_ids.filter((t) => !setA.has(t)).map(ref),
+		},
+	};
+}
+
+// ── Routine instances ────────────────────────────────────────────────────────
+//
+// Finding the previous instance of the SAME routine_id is a fact the MCP can
+// establish. Matching "same session" without a routine_id is fuzzy and
+// user-specific — the client does that and passes explicit workout_ids.
+
+export interface RoutineInstanceRef {
+	workout_id: string;
+	date: string;
+}
+
+export interface PreviousRoutineInstanceResult {
+	routine_id: string;
+	anchor: RoutineInstanceRef | null;
+	previous: RoutineInstanceRef | null;
+	total_instances: number;
+	scanned_workouts: number;
+	truncated: boolean;
+}
+
+/**
+ * Finds the previous instance of a routine.
+ *
+ * @param options.beforeWorkoutId - Anchor instance; default is the most recent.
+ */
+export function findPreviousRoutineInstance(
+	workouts: any[],
+	routineId: string,
+	options: { scannedWorkouts: number; truncated: boolean; beforeWorkoutId?: string },
+): PreviousRoutineInstanceResult {
+	const instances = workouts
+		.filter((w) => w?.routine_id === routineId)
+		.map((w) => ({
+			workout_id: typeof w?.id === "string" ? w.id : "",
+			start: workoutStart(w),
+		}))
+		.sort((a, b) => (a.start < b.start ? 1 : a.start > b.start ? -1 : 0));
+
+	const toRef = (i: { workout_id: string; start: string }): RoutineInstanceRef => ({
+		workout_id: i.workout_id,
+		date: i.start.slice(0, 10),
+	});
+
+	let anchorIdx = 0;
+	if (options.beforeWorkoutId) {
+		anchorIdx = instances.findIndex(
+			(i) => i.workout_id === options.beforeWorkoutId,
+		);
+	}
+
+	const anchor = anchorIdx >= 0 ? (instances[anchorIdx] ?? null) : null;
+	const previous =
+		anchorIdx >= 0 ? (instances[anchorIdx + 1] ?? null) : null;
+
+	return {
+		routine_id: routineId,
+		anchor: anchor ? toRef(anchor) : null,
+		previous: previous ? toRef(previous) : null,
+		total_instances: instances.length,
+		scanned_workouts: options.scannedWorkouts,
+		truncated: options.truncated,
+	};
+}
+
+// ── Muscle balance ───────────────────────────────────────────────────────────
+//
+// Distribution of effective sets / volume per primary muscle group over a
+// window. Numbers only — never a "balanced/unbalanced" verdict.
+
+export interface MuscleGroupVolume {
+	muscle_group: string;
+	effective_sets: number;
+	total_volume_kg: number;
+	exercise_count: number;
+}
+
+export interface MuscleBalanceResult {
+	since: string;
+	workouts_counted: number;
+	by_muscle_group: MuscleGroupVolume[];
+	unmapped_exercises: number;
+	truncated: boolean;
+}
+
+/**
+ * Aggregates effective sets and volume per primary muscle group.
+ *
+ * @param muscleGroupByTemplate - template_id → primary_muscle_group (from the catalog)
+ */
+export function analyzeMuscleBalance(
+	workouts: any[],
+	muscleGroupByTemplate: Record<string, string>,
+	since: string,
+	options: { truncated: boolean },
+): MuscleBalanceResult {
+	const inWindow = workouts.filter(
+		(w) => workoutStart(w).slice(0, 10) >= since,
+	);
+
+	const groups = new Map<string, MuscleGroupVolume>();
+	let unmapped = 0;
+
+	for (const workout of inWindow) {
+		const exercises: any[] = Array.isArray(workout?.exercises)
+			? workout.exercises
+			: [];
+		for (const exercise of exercises) {
+			const templateId =
+				typeof exercise?.exercise_template_id === "string"
+					? exercise.exercise_template_id
+					: "";
+			const muscleGroup = muscleGroupByTemplate[templateId];
+			if (!muscleGroup) {
+				unmapped++;
+				continue;
+			}
+			const group =
+				groups.get(muscleGroup) ??
+				({
+					muscle_group: muscleGroup,
+					effective_sets: 0,
+					total_volume_kg: 0,
+					exercise_count: 0,
+				} as MuscleGroupVolume);
+			group.exercise_count++;
+			const sets: any[] = Array.isArray(exercise?.sets) ? exercise.sets : [];
+			for (const set of sets.filter(isEffectiveSet)) {
+				group.effective_sets++;
+				const weight = numeric(set?.weight_kg);
+				const reps = numeric(set?.reps);
+				if (weight !== null && reps !== null) {
+					group.total_volume_kg += weight * reps;
+				}
+			}
+			groups.set(muscleGroup, group);
+		}
+	}
+
+	const byGroup = [...groups.values()]
+		.map((g) => ({ ...g, total_volume_kg: roundTo2(g.total_volume_kg) }))
+		.sort((a, b) => b.effective_sets - a.effective_sets);
+
+	return {
+		since,
+		workouts_counted: inWindow.length,
+		by_muscle_group: byGroup,
+		unmapped_exercises: unmapped,
+		truncated: options.truncated,
+	};
 }

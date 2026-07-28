@@ -78,6 +78,28 @@ const occurrenceSession = z.object({
 	exercise_count: z.number(),
 });
 
+const personalRecordEntry = z.object({
+	value: z.number(),
+	weight_kg: z.number().nullable(),
+	reps: z.number().nullable(),
+	date: z.string(),
+	workout_id: z.string(),
+});
+
+const workoutComparisonSide = z.object({
+	workout_id: z.string(),
+	date: z.string(),
+	tonnage_kg: z.number(),
+	effective_sets: z.number(),
+	duration_seconds: z.number().nullable(),
+	exercise_template_ids: z.array(z.string()),
+});
+
+const comparisonExerciseRef = z.object({
+	exercise_template_id: z.string(),
+	exercise_title: z.string().optional(),
+});
+
 const metricTrendObject = z.object({
 	field: z.string(),
 	first: z.number(),
@@ -184,6 +206,55 @@ export const HEVY_TOOL_OUTPUT_SCHEMAS: Record<string, z.ZodRawShape> = {
 		),
 		scanned_workouts: z.number(),
 		exercises_without_previous: z.number(),
+		truncated: z.boolean(),
+	},
+	get_personal_records: {
+		records: z.array(
+			z.object({
+				exercise_template_id: z.string(),
+				exercise_title: z.string().optional(),
+				max_weight_kg: personalRecordEntry.nullable(),
+				best_estimated_1rm_kg: personalRecordEntry.nullable(),
+				max_reps: personalRecordEntry.nullable(),
+			}),
+		),
+		scanned_workouts: z.number(),
+		truncated: z.boolean(),
+	},
+	compare_workouts: {
+		a: workoutComparisonSide,
+		b: workoutComparisonSide,
+		delta: z.object({
+			tonnage_kg: z.number(),
+			effective_sets: z.number(),
+			duration_seconds: z.number().nullable(),
+		}),
+		exercises: z.object({
+			in_both: z.array(comparisonExerciseRef),
+			only_in_a: z.array(comparisonExerciseRef),
+			only_in_b: z.array(comparisonExerciseRef),
+		}),
+	},
+	get_previous_routine_instance: {
+		routine_id: z.string(),
+		anchor: z.object({ workout_id: z.string(), date: z.string() }).nullable(),
+		previous: z.object({ workout_id: z.string(), date: z.string() }).nullable(),
+		total_instances: z.number(),
+		scanned_workouts: z.number(),
+		truncated: z.boolean(),
+	},
+	get_muscle_balance: {
+		since: z.string(),
+		workouts_counted: z.number(),
+		by_muscle_group: z.array(
+			z.object({
+				muscle_group: z.string(),
+				effective_sets: z.number(),
+				total_volume_kg: z.number(),
+				exercise_count: z.number(),
+			}),
+		),
+		unmapped_exercises: z.number(),
 		truncated: z.boolean(),
 	},
 };

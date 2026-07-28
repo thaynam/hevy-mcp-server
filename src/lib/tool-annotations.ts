@@ -88,6 +88,12 @@ export const HEVY_TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
 	get_body_progress: readOnlyAnnotations("Get Body Progress"),
 	get_training_summary: readOnlyAnnotations("Get Training Summary"),
 	get_progression_deltas: readOnlyAnnotations("Get Progression Deltas"),
+	get_personal_records: readOnlyAnnotations("Get Personal Records"),
+	compare_workouts: readOnlyAnnotations("Compare Workouts"),
+	get_previous_routine_instance: readOnlyAnnotations(
+		"Get Previous Routine Instance",
+	),
+	get_muscle_balance: readOnlyAnnotations("Get Muscle Balance"),
 	// Webhook subscription
 	get_webhook_subscription: readOnlyAnnotations("Get Webhook Subscription"),
 	create_webhook_subscription: createAnnotations("Create Webhook Subscription"),
