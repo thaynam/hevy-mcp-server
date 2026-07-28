@@ -30,6 +30,21 @@ const measurementObject = z.object({
 	...measurementMetricFields,
 });
 
+// Permissive object: nested workout/routine payloads are large and evolving,
+// so structured output exposes the envelope + items without over-constraining
+// the item shape (Zod strips unknown keys; we don't want validation to reject
+// real API data).
+const looseObject = z.record(z.any());
+
+/** Standard paginated envelope for a list tool. */
+function paginatedList(itemsKey: string): z.ZodRawShape {
+	return {
+		page: z.number().optional(),
+		page_count: z.number().optional(),
+		[itemsKey]: z.array(looseObject),
+	};
+}
+
 const metricTrendObject = z.object({
 	field: z.string(),
 	first: z.number(),
@@ -91,6 +106,37 @@ export const HEVY_TOOL_OUTPUT_SCHEMAS: Record<string, z.ZodRawShape> = {
 		avgWorkoutsPerWeek: z.number(),
 		firstDate: z.string().optional(),
 		lastDate: z.string().optional(),
+	},
+	// Lists
+	get_workouts: paginatedList("workouts"),
+	get_workout_events: paginatedList("events"),
+	get_routines: paginatedList("routines"),
+	get_exercise_templates: paginatedList("exercise_templates"),
+	get_routine_folders: paginatedList("routine_folders"),
+	get_exercise_history: {
+		exercise_history: z.array(looseObject),
+	},
+	// Single resources (found flag + nullable entity for the 404 outcome)
+	get_workout: {
+		found: z.boolean(),
+		workout: looseObject.nullable(),
+	},
+	get_routine: {
+		found: z.boolean(),
+		routine: looseObject.nullable(),
+	},
+	get_exercise_template: {
+		found: z.boolean(),
+		exercise_template: looseObject.nullable(),
+	},
+	get_routine_folder: {
+		found: z.boolean(),
+		routine_folder: looseObject.nullable(),
+	},
+	get_webhook_subscription: {
+		configured: z.boolean(),
+		url: z.string().optional(),
+		auth_token: z.string().optional(),
 	},
 };
 

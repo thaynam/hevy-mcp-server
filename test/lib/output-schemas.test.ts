@@ -127,6 +127,49 @@ describe("output-schemas", () => {
 			const summary = analyzeTrainingSummary([], "2024-01-01", 4);
 			expect(parseOutput("get_training_summary", summary).success).toBe(true);
 		});
+
+		it("list envelopes accept paginated results with loose items", () => {
+			expect(
+				parseOutput("get_workouts", {
+					page: 1,
+					page_count: 2,
+					workouts: [{ id: "w1", title: "Leg Day", exercises: [{ sets: [{}] }] }],
+				}).success,
+			).toBe(true);
+			expect(
+				parseOutput("get_routines", { page: 1, page_count: 1, routines: [] }).success,
+			).toBe(true);
+			expect(
+				parseOutput("get_exercise_history", {
+					exercise_history: [{ weight_kg: 100, reps: 5 }],
+				}).success,
+			).toBe(true);
+		});
+
+		it("single-resource reads accept found and not-found shapes", () => {
+			expect(
+				parseOutput("get_workout", {
+					found: true,
+					workout: { id: "w1", title: "Leg Day" },
+				}).success,
+			).toBe(true);
+			expect(
+				parseOutput("get_workout", { found: false, workout: null }).success,
+			).toBe(true);
+		});
+
+		it("get_webhook_subscription accepts configured and unconfigured", () => {
+			expect(
+				parseOutput("get_webhook_subscription", {
+					configured: true,
+					url: "https://example.com/hevy",
+					auth_token: "Bearer x",
+				}).success,
+			).toBe(true);
+			expect(
+				parseOutput("get_webhook_subscription", { configured: false }).success,
+			).toBe(true);
+		});
 	});
 
 	describe("applyToolOutputSchemas", () => {

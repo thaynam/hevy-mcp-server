@@ -39,7 +39,7 @@ import {
   formatTrainingSummary,
 } from "./lib/analysis.js";
 import { filterExerciseTemplates } from "./lib/exercise-search.js";
-import { isNotFoundError, notFoundResponse } from "./lib/hevy-error-policy.js";
+import { isNotFoundError } from "./lib/hevy-error-policy.js";
 import { applyToolAnnotations } from "./lib/tool-annotations.js";
 import { applyToolDescriptions } from "./lib/tool-descriptions.js";
 import { applyToolOutputSchemas } from "./lib/output-schemas.js";
@@ -127,6 +127,11 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 text: `\n\nFull data:\n${JSON.stringify(workouts.workouts, null, 2)}`,
               },
             ],
+            structuredContent: {
+              page: workouts.page,
+              page_count: workouts.page_count,
+              workouts: workouts.workouts ?? [],
+            },
           };
         } catch (error) {
           return handleError(error);
@@ -154,10 +159,19 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 text: JSON.stringify(workout, null, 2),
               },
             ],
+            structuredContent: { found: true, workout },
           };
         } catch (error) {
           if (isNotFoundError(error)) {
-            return notFoundResponse(`No workout found with ID ${workout_id}`);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `No workout found with ID ${workout_id}`,
+                },
+              ],
+              structuredContent: { found: false, workout: null },
+            };
           }
           return handleError(error);
         }
@@ -313,6 +327,11 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 text: eventDetails,
               },
             ],
+            structuredContent: {
+              page: events.page,
+              page_count: events.page_count,
+              events: events.events ?? [],
+            },
           };
         } catch (error) {
           return handleError(error);
@@ -371,6 +390,11 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 text: `\n\nFull data:\n${JSON.stringify(routines.routines, null, 2)}`,
               },
             ],
+            structuredContent: {
+              page: routines.page,
+              page_count: routines.page_count,
+              routines: routines.routines ?? [],
+            },
           };
         } catch (error) {
           return handleError(error);
@@ -399,10 +423,19 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 text: JSON.stringify(routine, null, 2),
               },
             ],
+            structuredContent: { found: true, routine },
           };
         } catch (error) {
           if (isNotFoundError(error)) {
-            return notFoundResponse(`No routine found with ID ${routine_id}`);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `No routine found with ID ${routine_id}`,
+                },
+              ],
+              structuredContent: { found: false, routine: null },
+            };
           }
           return handleError(error);
         }
@@ -529,6 +562,11 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 text: templateDetails,
               },
             ],
+            structuredContent: {
+              page: templates.page,
+              page_count: templates.page_count,
+              exercise_templates: templates.exercise_templates ?? [],
+            },
           };
         } catch (error) {
           return handleError(error);
@@ -559,12 +597,19 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 text: JSON.stringify(template, null, 2),
               },
             ],
+            structuredContent: { found: true, exercise_template: template },
           };
         } catch (error) {
           if (isNotFoundError(error)) {
-            return notFoundResponse(
-              `No exercise template found with ID ${exercise_template_id}`,
-            );
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `No exercise template found with ID ${exercise_template_id}`,
+                },
+              ],
+              structuredContent: { found: false, exercise_template: null },
+            };
           }
           return handleError(error);
         }
@@ -721,6 +766,9 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 text: `\n\nFull data:\n${JSON.stringify(history.exercise_history, null, 2)}`,
               },
             ],
+            structuredContent: {
+              exercise_history: history.exercise_history ?? [],
+            },
           };
         } catch (error) {
           return handleError(error);
@@ -778,6 +826,11 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 text: folderDetails,
               },
             ],
+            structuredContent: {
+              page: folders.page,
+              page_count: folders.page_count,
+              routine_folders: folders.routine_folders ?? [],
+            },
           };
         } catch (error) {
           return handleError(error);
@@ -805,10 +858,19 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 text: JSON.stringify(folder, null, 2),
               },
             ],
+            structuredContent: { found: true, routine_folder: folder },
           };
         } catch (error) {
           if (isNotFoundError(error)) {
-            return notFoundResponse(`No routine folder found with ID ${folder_id}`);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `No routine folder found with ID ${folder_id}`,
+                },
+              ],
+              structuredContent: { found: false, routine_folder: null },
+            };
           }
           return handleError(error);
         }
@@ -1214,10 +1276,25 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
               text: JSON.stringify(subscription, null, 2),
             },
           ],
+          structuredContent: {
+            configured: true,
+            ...(subscription?.url !== undefined ? { url: subscription.url } : {}),
+            ...(subscription?.auth_token !== undefined
+              ? { auth_token: subscription.auth_token }
+              : {}),
+          },
         };
       } catch (error) {
         if (isNotFoundError(error)) {
-          return notFoundResponse("No webhook subscription is configured.");
+          return {
+            content: [
+              {
+                type: "text",
+                text: "No webhook subscription is configured.",
+              },
+            ],
+            structuredContent: { configured: false },
+          };
         }
         return handleError(error);
       }
