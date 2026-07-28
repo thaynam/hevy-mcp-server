@@ -153,6 +153,13 @@ export const HEVY_TOOL_DESCRIPTIONS: Record<string, string> = {
 			"Use to see progress/direction at a glance instead of paging through get_body_measurements; each metric reports first → last, change, and count.",
 		note: "weeks defaults to 8 (1-52); scans the account's recent measurements.",
 	}),
+	get_training_summary: describeTool({
+		summary:
+			"Read-only. Summarizes training activity (workouts, sets, volume, frequency) over the last N weeks.",
+		useCase:
+			"Use for a training-load/consistency overview instead of paging through get_workouts; reports workout count, per-week average, active days, total sets and volume (kg).",
+		note: "weeks defaults to 4 (1-52); scans the account's recent workouts.",
+	}),
 	// Webhook subscription
 	get_webhook_subscription: describeTool({
 		summary:

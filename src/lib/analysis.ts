@@ -139,3 +139,122 @@ export function formatBodyProgress(
 
 	return lines.join("\n");
 }
+
+/** Summary of training activity over a window. */
+export interface TrainingSummary {
+	/** Inclusive lower bound of the window (YYYY-MM-DD). */
+	since: string;
+	/** Number of workouts logged in the window. */
+	workoutCount: number;
+	/** Distinct calendar days with at least one workout. */
+	activeDays: number;
+	/** Total number of exercises across the window's workouts. */
+	totalExercises: number;
+	/** Total number of sets across the window's workouts. */
+	totalSets: number;
+	/** Total training volume (sum of weight_kg × reps) in kilograms. */
+	totalVolumeKg: number;
+	/** Average workouts per week over the window. */
+	avgWorkoutsPerWeek: number;
+	/** Date (YYYY-MM-DD) of the earliest workout in the window, if any. */
+	firstDate?: string;
+	/** Date (YYYY-MM-DD) of the latest workout in the window, if any. */
+	lastDate?: string;
+}
+
+type WorkoutLike = Record<string, unknown> & { start_time?: unknown };
+
+function workoutDate(workout: WorkoutLike): string | undefined {
+	return typeof workout.start_time === "string"
+		? workout.start_time.slice(0, 10)
+		: undefined;
+}
+
+/**
+ * Aggregates training activity (workouts, sets, volume) for workouts dated
+ * on/after `since`.
+ *
+ * Volume counts a set only when both weight_kg and reps are numeric.
+ *
+ * @param workouts - Raw workout entries (any order)
+ * @param since - Inclusive lower-bound date (YYYY-MM-DD)
+ * @param weeks - Window length, used for the per-week average
+ */
+export function analyzeTrainingSummary(
+	workouts: WorkoutLike[],
+	since: string,
+	weeks: number,
+): TrainingSummary {
+	const inWindow = workouts
+		.filter((w) => {
+			const date = workoutDate(w);
+			return date !== undefined && date >= since;
+		})
+		.sort((a, b) => {
+			const da = workoutDate(a) ?? "";
+			const db = workoutDate(b) ?? "";
+			return da < db ? -1 : da > db ? 1 : 0;
+		});
+
+	const activeDays = new Set<string>();
+	let totalExercises = 0;
+	let totalSets = 0;
+	let totalVolumeKg = 0;
+
+	for (const workout of inWindow) {
+		const date = workoutDate(workout);
+		if (date) activeDays.add(date);
+
+		const exercises = Array.isArray(workout.exercises) ? workout.exercises : [];
+		totalExercises += exercises.length;
+
+		for (const exercise of exercises) {
+			const sets = Array.isArray(exercise?.sets) ? exercise.sets : [];
+			totalSets += sets.length;
+			for (const set of sets) {
+				if (
+					typeof set?.weight_kg === "number" &&
+					typeof set?.reps === "number"
+				) {
+					totalVolumeKg += set.weight_kg * set.reps;
+				}
+			}
+		}
+	}
+
+	const summary: TrainingSummary = {
+		since,
+		workoutCount: inWindow.length,
+		activeDays: activeDays.size,
+		totalExercises,
+		totalSets,
+		totalVolumeKg: roundTo2(totalVolumeKg),
+		avgWorkoutsPerWeek: roundTo2(inWindow.length / Math.max(weeks, 1)),
+	};
+	if (inWindow.length > 0) {
+		const first = workoutDate(inWindow[0]);
+		const last = workoutDate(inWindow[inWindow.length - 1]);
+		if (first !== undefined) summary.firstDate = first;
+		if (last !== undefined) summary.lastDate = last;
+	}
+	return summary;
+}
+
+/**
+ * Renders a training summary as a compact human-readable report.
+ */
+export function formatTrainingSummary(
+	summary: TrainingSummary,
+	weeks: number,
+): string {
+	if (summary.workoutCount === 0) {
+		return `No workouts logged in the last ${weeks} week(s) (since ${summary.since}).`;
+	}
+
+	return [
+		`Training summary over the last ${weeks} week(s) (since ${summary.since}):`,
+		`Workouts: ${summary.workoutCount} (${summary.avgWorkoutsPerWeek}/week, ${summary.activeDays} active day(s))`,
+		`From ${summary.firstDate} to ${summary.lastDate}.`,
+		`Exercises: ${summary.totalExercises} | Sets: ${summary.totalSets} | Volume: ${summary.totalVolumeKg} kg`,
+	].join("\n");
+}

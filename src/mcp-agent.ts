@@ -32,7 +32,12 @@ import {
   PAGINATION_LIMITS,
 } from "./lib/transforms.js";
 import { handleError } from "./lib/errors.js";
-import { analyzeBodyProgress, formatBodyProgress } from "./lib/analysis.js";
+import {
+  analyzeBodyProgress,
+  formatBodyProgress,
+  analyzeTrainingSummary,
+  formatTrainingSummary,
+} from "./lib/analysis.js";
 import { isNotFoundError, notFoundResponse } from "./lib/hevy-error-policy.js";
 import { applyToolAnnotations } from "./lib/tool-annotations.js";
 import { applyToolDescriptions } from "./lib/tool-descriptions.js";
@@ -1043,6 +1048,76 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
           if (!scannedAllPages) {
             reportParts.push(
               `\n(Note: only the first ${MAX_PAGES} pages were scanned; older measurements may exist.)`,
+            );
+          }
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: reportParts.join("\n"),
+              },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,
+              },
+            ],
+            structuredContent: summary,
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "get_training_summary",
+      {
+        weeks: z
+          .number()
+          .int()
+          .min(1)
+          .max(52)
+          .optional()
+          .describe("Number of recent weeks to summarize (1-52)")
+          .default(4),
+      },
+      async ({ weeks }) => {
+        try {
+          const since = new Date(Date.now() - weeks * 7 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10);
+
+          // Page through workouts (pageSize max 10), capped for safety.
+          const MAX_PAGES = 20;
+          const pageSize = 10;
+          const workouts: any[] = [];
+          let page = 1;
+          let pageCount = 1;
+          let scannedAllPages = true;
+
+          while (page <= pageCount) {
+            if (page > MAX_PAGES) {
+              scannedAllPages = false;
+              break;
+            }
+            let result: any;
+            try {
+              result = await this.client.getWorkouts({ page, pageSize });
+            } catch (error) {
+              if (isNotFoundError(error)) break;
+              throw error;
+            }
+            workouts.push(...(result.workouts ?? []));
+            pageCount = result.page_count ?? page;
+            page++;
+          }
+
+          const summary = analyzeTrainingSummary(workouts, since, weeks);
+          const reportParts = [formatTrainingSummary(summary, weeks)];
+          if (!scannedAllPages) {
+            reportParts.push(
+              `\n(Note: only the first ${MAX_PAGES} pages were scanned; older workouts may exist.)`,
             );
           }
 

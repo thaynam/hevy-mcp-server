@@ -5,7 +5,10 @@ import {
 	HEVY_TOOL_OUTPUT_SCHEMAS,
 	applyToolOutputSchemas,
 } from "../../src/lib/output-schemas.js";
-import { analyzeBodyProgress } from "../../src/lib/analysis.js";
+import {
+	analyzeBodyProgress,
+	analyzeTrainingSummary,
+} from "../../src/lib/analysis.js";
 
 /** Parses a value against a tool's output shape (mirrors the SDK's validation). */
 function parseOutput(tool: string, value: unknown) {
@@ -81,6 +84,25 @@ describe("output-schemas", () => {
 		it("get_body_progress matches an empty summary", () => {
 			const summary = analyzeBodyProgress([], "2024-01-01");
 			expect(parseOutput("get_body_progress", summary).success).toBe(true);
+		});
+
+		it("get_training_summary matches analyzeTrainingSummary output", () => {
+			const summary = analyzeTrainingSummary(
+				[
+					{
+						start_time: "2024-08-01T10:00:00Z",
+						exercises: [{ sets: [{ weight_kg: 100, reps: 5 }] }],
+					},
+				],
+				"2024-01-01",
+				4,
+			);
+			expect(parseOutput("get_training_summary", summary).success).toBe(true);
+		});
+
+		it("get_training_summary matches an empty summary", () => {
+			const summary = analyzeTrainingSummary([], "2024-01-01", 4);
+			expect(parseOutput("get_training_summary", summary).success).toBe(true);
 		});
 	});
 

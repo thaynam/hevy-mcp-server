@@ -85,6 +85,7 @@ export const HEVY_TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
 	create_body_measurement: createAnnotations("Create Body Measurement"),
 	update_body_measurement: updateAnnotations("Update Body Measurement"),
 	get_body_progress: readOnlyAnnotations("Get Body Progress"),
+	get_training_summary: readOnlyAnnotations("Get Training Summary"),
 	// Webhook subscription
 	get_webhook_subscription: readOnlyAnnotations("Get Webhook Subscription"),
 	create_webhook_subscription: createAnnotations("Create Webhook Subscription"),

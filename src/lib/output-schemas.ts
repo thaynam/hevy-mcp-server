@@ -67,6 +67,17 @@ export const HEVY_TOOL_OUTPUT_SCHEMAS: Record<string, z.ZodRawShape> = {
 		lastDate: z.string().optional(),
 		metrics: z.array(metricTrendObject),
 	},
+	get_training_summary: {
+		since: z.string(),
+		workoutCount: z.number(),
+		activeDays: z.number(),
+		totalExercises: z.number(),
+		totalSets: z.number(),
+		totalVolumeKg: z.number(),
+		avgWorkoutsPerWeek: z.number(),
+		firstDate: z.string().optional(),
+		lastDate: z.string().optional(),
+	},
 };
 
 /**

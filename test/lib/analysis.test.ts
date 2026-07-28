@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
 	analyzeBodyProgress,
 	formatBodyProgress,
+	analyzeTrainingSummary,
+	formatTrainingSummary,
 } from "../../src/lib/analysis.js";
 
 describe("analysis - analyzeBodyProgress", () => {
@@ -97,5 +99,73 @@ describe("analysis - formatBodyProgress", () => {
 		const text = formatBodyProgress(summary, 8);
 		expect(text).toContain("weight_kg: 82 → 80");
 		expect(text).toContain("▼ -2");
+	});
+});
+
+describe("analysis - analyzeTrainingSummary", () => {
+	const workouts = [
+		{
+			start_time: "2024-08-01T10:00:00Z",
+			exercises: [
+				{
+					sets: [
+						{ weight_kg: 100, reps: 5 }, // 500
+						{ weight_kg: 100, reps: 5 }, // 500
+					],
+				},
+				{ sets: [{ weight_kg: 50, reps: 10 }] }, // 500
+			],
+		},
+		{
+			start_time: "2024-08-03T10:00:00Z",
+			exercises: [{ sets: [{ weight_kg: 60, reps: 10 }, { reps: 12 }] }], // 600, second set no weight
+		},
+		// Outside the window (since = 2024-07-15):
+		{ start_time: "2024-06-01T10:00:00Z", exercises: [{ sets: [{ weight_kg: 80, reps: 5 }] }] },
+	];
+
+	it("counts workouts, sets, exercises and volume in the window", () => {
+		const s = analyzeTrainingSummary(workouts, "2024-07-15", 4);
+		expect(s.workoutCount).toBe(2);
+		expect(s.activeDays).toBe(2);
+		expect(s.totalExercises).toBe(3);
+		expect(s.totalSets).toBe(5);
+		expect(s.totalVolumeKg).toBe(2100); // 500+500+500+600
+		expect(s.firstDate).toBe("2024-08-01");
+		expect(s.lastDate).toBe("2024-08-03");
+	});
+
+	it("computes average workouts per week from the window length", () => {
+		const s = analyzeTrainingSummary(workouts, "2024-07-15", 4);
+		expect(s.avgWorkoutsPerWeek).toBe(0.5); // 2 / 4
+	});
+
+	it("only counts a set toward volume when weight and reps are both numeric", () => {
+		const s = analyzeTrainingSummary(
+			[{ start_time: "2024-08-01T10:00:00Z", exercises: [{ sets: [{ reps: 10 }, { weight_kg: 40 }] }] }],
+			"2024-01-01",
+			1,
+		);
+		expect(s.totalSets).toBe(2);
+		expect(s.totalVolumeKg).toBe(0);
+	});
+
+	it("returns an empty summary when no workouts are in the window", () => {
+		const s = analyzeTrainingSummary(workouts, "2030-01-01", 4);
+		expect(s.workoutCount).toBe(0);
+		expect(s.totalVolumeKg).toBe(0);
+		expect(s.firstDate).toBeUndefined();
+	});
+
+	it("formats a friendly report", () => {
+		const s = analyzeTrainingSummary(workouts, "2024-07-15", 4);
+		const text = formatTrainingSummary(s, 4);
+		expect(text).toContain("Workouts: 2");
+		expect(text).toContain("Volume: 2100 kg");
+	});
+
+	it("formats a no-data message", () => {
+		const s = analyzeTrainingSummary([], "2024-07-15", 4);
+		expect(formatTrainingSummary(s, 4)).toContain("No workouts logged");
 	});
 });
