@@ -63,8 +63,12 @@ Every tool returns two things:
 **Shared conventions**
 
 - **Prefer `structuredContent`** for any logic.
-- **Scan cap:** history tools read up to **20 pages** (~200 workouts/measurements).
-  If more exist, `truncated: true` and the text notes it.
+- **Scan cap:** history tools read up to **20 pages** (~200 workouts/measurements)
+  by default. If more exist, `truncated: true` (in `structuredContent`, not just
+  the text). The history tools (`get_progression_deltas`, `get_personal_records`,
+  `get_previous_routine_instance`, `get_muscle_balance`) accept **`max_pages`**
+  (default 20, up to 100) to scan deeper — useful for high-frequency loggers
+  where a real record or the correct prior session can be older than 200 workouts.
 - **Date window** is by calendar day (`YYYY-MM-DD`) from the server's current date.
 - **Errors vs. empty:** an empty result (count 0, `previous: null`, `anchor: null`)
   is normal, not an error. Real failures (bad key, Hevy down) return `isError: true`.
@@ -132,7 +136,13 @@ For each exercise in a session, the raw diff vs. the **previous occurrence of th
 same `exercise_template_id`** — found by scanning earlier workouts (skipping the
 sessions in between that trained other muscle groups).
 
-**Input:** `workout_id` (string, optional — default: most recent workout).
+**Input**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `workout_id` | string | most recent workout | The session to analyze. |
+| `history_depth` | integer | `1` | 1–20. When `> 1`, each exercise also gets an `occurrences` array: the last N occurrences of that `template_id` (current + priors, most recent first) — a multi-session view without chaining calls client-side. |
+| `max_pages` | integer | `20` | 1–100. Scan depth (~10 workouts/page). |
 
 ```jsonc
 {
@@ -154,8 +164,10 @@ sessions in between that trained other muscle groups).
       "delta": {                          // current − previous, raw; null if previous null
         "effective_sets": 0, "total_volume_kg": 37.5, "total_reps": 0,
         "max_weight_kg": 2.5, "best_estimated_1rm_kg": 2.9,
-        "top_set_weight_kg": 2.5, "top_set_reps": 0
-      }
+        "top_set_weight_kg": 2.5, "top_set_reps": 0,
+        "top_set_rpe": 1.5                // RPE change on the top set; null if either side lacks RPE
+      },
+      "occurrences": [ /* current + N priors, same shape as current — only when history_depth > 1 */ ]
     }
   ],
   "scanned_workouts": 140,
@@ -167,13 +179,27 @@ sessions in between that trained other muscle groups).
 Bodyweight/duration exercises: `top_set`/`max_weight_kg`/`best_estimated_1rm_kg`
 come back `null`; `effective_sets`/`total_reps` are still valid.
 
+`top_set_rpe` is the raw RPE difference at the top set — e.g. same load × reps
+with rising RPE is a fatigue **fact** the coach can interpret. It is `null`
+(never zero) when either side has no RPE logged.
+
 ---
 
 ## `get_personal_records`
 
 Per exercise (by `template_id`), the maxima across scanned workouts.
 
-**Input:** `exercise_template_id` (string, optional — default: all exercises).
+**Input**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `exercise_template_id` | string | all exercises | Restrict to one exercise. |
+| `max_pages` | integer | `20` | 1–100. Scan depth (~10 workouts/page). |
+
+> ⚠️ **Records are maxima over the scanned window** (`scanned_workouts`), not
+> absolute all-time records. When `truncated: true`, an older, larger record may
+> exist — raise `max_pages` (or say "best in the last N workouts", not "all-time
+> PR") for high-frequency loggers.
 
 ```jsonc
 {
@@ -231,8 +257,13 @@ before it — so the caller can feed both IDs to `compare_workouts`. Matching th
 "same session" **without** a routine is fuzzy/user-specific and is left to the
 caller.
 
-**Input:** `routine_id` (string, required), `before_workout_id` (string,
-optional — default anchor: the most recent instance).
+**Input**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `routine_id` | string | — | Required. |
+| `before_workout_id` | string | most recent instance | Anchor; returns the instance before it. |
+| `max_pages` | integer | `20` | 1–100. Scan depth (~10 workouts/page). |
 
 ```jsonc
 {
@@ -253,21 +284,39 @@ Distribution of effective sets and volume per **primary muscle group** over the
 last N weeks — numbers only, never a "balanced/unbalanced" verdict. Joins
 workouts to the exercise catalog by `template_id`.
 
-**Input:** `weeks` (integer, default `4`, 1–52).
+**Input**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `weeks` | integer | `4` | 1–52. Window = today − `weeks`. |
+| `include_secondary` | boolean | `false` | When `true`, also returns a **separate** `by_muscle_group_secondary` block. |
+| `max_pages` | integer | `20` | 1–100. Scan depth (~10 workouts/page). |
 
 ```jsonc
 {
   "since": "2025-07-29",
   "workouts_counted": 140,
-  "by_muscle_group": [               // sorted by effective_sets desc
+  "by_muscle_group": [               // PRIMARY muscle group; sorted by effective_sets desc
     { "muscle_group": "chest",     "effective_sets": 349, "total_volume_kg": 205723.5, "exercise_count": 120 },
     { "muscle_group": "shoulders", "effective_sets": 332, "total_volume_kg": 113401.4, "exercise_count": 110 }
     // ...
   ],
-  "unmapped_exercises": 0,           // exercises whose template isn't in the catalog
+  "unmapped_exercises": 0,               // occurrences whose template isn't in the catalog
+  "unmapped_exercise_template_ids": [],  // the distinct missing template_ids (so the client can re-cache its muscle map)
+  "by_muscle_group_secondary": [         // only when include_secondary: true — same shape,
+    // counted where the muscle is a SECONDARY mover
+  ],
   "truncated": false
 }
 ```
+
+**Secondary volume:** exercises like bench press or rows also work triceps/biceps
+as secondary movers, so arm volume is under-counted in the primary-only view. With
+`include_secondary: true` you get both distributions **separately** — the same
+set is attributed to its primary group in `by_muscle_group` and to each of its
+secondary groups in `by_muscle_group_secondary`. They are **never summed**, and
+no 0.5-credit convention is baked in: the coach decides how (or whether) to
+credit secondary work.
 
 ---
 
@@ -320,6 +369,9 @@ with MCPServerAdapter(server_params) as tools:
   so the coach knows consistency and weight/waist trend without asking.
 - **Session review:** `get_progression_deltas()` right after a workout, then the
   coach interprets each delta against the user's phase.
+- **Multi-session trend / fatigue check:** `get_progression_deltas(history_depth=3)`
+  to see the last 3 occurrences of each exercise in one call — e.g. load flat
+  while `top_set_rpe` rises across sessions.
 - **Routine comparison:** `get_previous_routine_instance(routine_id)` → feed
   `anchor` + `previous` workout IDs into `compare_workouts`.
 - **Programming check:** `get_muscle_balance(weeks=8)` for the raw split; the
