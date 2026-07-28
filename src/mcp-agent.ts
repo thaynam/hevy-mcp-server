@@ -36,6 +36,7 @@ import { analyzeBodyProgress, formatBodyProgress } from "./lib/analysis.js";
 import { isNotFoundError, notFoundResponse } from "./lib/hevy-error-policy.js";
 import { applyToolAnnotations } from "./lib/tool-annotations.js";
 import { applyToolDescriptions } from "./lib/tool-descriptions.js";
+import { applyToolOutputSchemas } from "./lib/output-schemas.js";
 import type { Props } from "./utils.js";
 
 // Define our MCP agent with Hevy API tools and OAuth support
@@ -235,6 +236,7 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
               text: `Total workouts: ${result.workout_count}`,
             },
           ],
+          structuredContent: { workout_count: result.workout_count },
         };
       } catch (error) {
         return handleError(error);
@@ -801,6 +803,11 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
               text: JSON.stringify(result, null, 2),
             },
           ],
+          structuredContent: {
+            ...(user?.id !== undefined ? { id: user.id } : {}),
+            ...(user?.name !== undefined ? { name: user.name } : {}),
+            ...(user?.url !== undefined ? { url: user.url } : {}),
+          },
         };
       } catch (error) {
         return handleError(error);
@@ -860,6 +867,11 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 text: `\n\nFull data:\n${JSON.stringify(measurements.body_measurements, null, 2)}`,
               },
             ],
+            structuredContent: {
+              page: measurements.page,
+              page_count: measurements.page_count,
+              body_measurements: measurements.body_measurements ?? [],
+            },
           };
         } catch (error) {
           return handleError(error);
@@ -891,10 +903,23 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 text: JSON.stringify(measurement, null, 2),
               },
             ],
+            structuredContent: {
+              found: true,
+              date: measurement.date ?? date,
+              measurement,
+            },
           };
         } catch (error) {
           if (isNotFoundError(error)) {
-            return notFoundResponse(`No body measurement found for ${date}`);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `No body measurement found for ${date}`,
+                },
+              ],
+              structuredContent: { found: false, date, measurement: null },
+            };
           }
           return handleError(error);
         }
@@ -1032,6 +1057,7 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,
               },
             ],
+            structuredContent: summary,
           };
         } catch (error) {
           return handleError(error);
@@ -1113,9 +1139,10 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
       }
     });
 
-    // Attach MCP annotation hints (readOnly/destructive/idempotent/openWorld)
-    // and descriptions to every registered tool.
+    // Attach MCP annotation hints (readOnly/destructive/idempotent/openWorld),
+    // descriptions, and output schemas to every registered tool.
     applyToolAnnotations(this.server);
     applyToolDescriptions(this.server);
+    applyToolOutputSchemas(this.server);
   }
 }
