@@ -1,3 +1,22 @@
+import type {
+  BodyMeasurementResponse,
+  BodyMeasurementsListResponse,
+  ExerciseHistoryResponse,
+  ExerciseTemplate,
+  ExerciseTemplateResponse,
+  ExerciseTemplatesListResponse,
+  RoutineFolderResponse,
+  RoutineFoldersListResponse,
+  RoutineResponse,
+  RoutinesListResponse,
+  UserInfoResp,
+  WebhookSubscriptionResponse,
+  WorkoutEventsResponse,
+  WorkoutResponse,
+  WorkoutsCountResponse,
+  WorkoutsListResponse,
+} from "./hevy-types.js";
+
 /**
  * Configuration options for the Hevy API client
  */
@@ -56,7 +75,7 @@ export class HevyClient {
   private readonly maxDelayMs = 8000;
 
   // Per-instance cache of the (mostly static) exercise-template catalog.
-  private exerciseTemplateCache: { data: any[]; expiresAt: number } | undefined;
+  private exerciseTemplateCache: { data: ExerciseTemplate[]; expiresAt: number } | undefined;
   private readonly exerciseCacheTtlMs = 5 * 60 * 1000;
 
   /**
@@ -227,15 +246,15 @@ export class HevyClient {
   /**
    * Get a paginated list of workouts
    */
-  async getWorkouts(options?: { page?: number; pageSize?: number }): Promise<any> {
-    return this.get<any>('/v1/workouts', options as Record<string, string | number | boolean | undefined>);
+  async getWorkouts(options?: { page?: number; pageSize?: number }): Promise<WorkoutsListResponse> {
+    return this.get<WorkoutsListResponse>('/v1/workouts', options as Record<string, string | number | boolean | undefined>);
   }
 
   /**
    * Get a single workout by ID
    */
-  async getWorkout(workoutId: string): Promise<any> {
-    return this.get<any>(`/v1/workouts/${workoutId}`);
+  async getWorkout(workoutId: string): Promise<WorkoutResponse> {
+    return this.get<WorkoutResponse>(`/v1/workouts/${workoutId}`);
   }
 
   /**
@@ -255,15 +274,15 @@ export class HevyClient {
   /**
    * Get the total count of workouts
    */
-  async getWorkoutsCount(): Promise<{ workout_count: number }> {
-    return this.get<{ workout_count: number }>('/v1/workouts/count');
+  async getWorkoutsCount(): Promise<WorkoutsCountResponse> {
+    return this.get<WorkoutsCountResponse>('/v1/workouts/count');
   }
 
   /**
    * Get workout events (updates or deletes) since a given date
    */
-  async getWorkoutEvents(options?: { page?: number; pageSize?: number; since?: string }): Promise<any> {
-    return this.get<any>('/v1/workouts/events', options as Record<string, string | number | boolean | undefined>);
+  async getWorkoutEvents(options?: { page?: number; pageSize?: number; since?: string }): Promise<WorkoutEventsResponse> {
+    return this.get<WorkoutEventsResponse>('/v1/workouts/events', options as Record<string, string | number | boolean | undefined>);
   }
 
   // ============================================
@@ -273,15 +292,15 @@ export class HevyClient {
   /**
    * Get a paginated list of routines
    */
-  async getRoutines(options?: { page?: number; pageSize?: number }): Promise<any> {
-    return this.get<any>('/v1/routines', options as Record<string, string | number | boolean | undefined>);
+  async getRoutines(options?: { page?: number; pageSize?: number }): Promise<RoutinesListResponse> {
+    return this.get<RoutinesListResponse>('/v1/routines', options as Record<string, string | number | boolean | undefined>);
   }
 
   /**
    * Get a single routine by ID
    */
-  async getRoutine(routineId: string): Promise<{ routine: any }> {
-    return this.get<{ routine: any }>(`/v1/routines/${routineId}`);
+  async getRoutine(routineId: string): Promise<RoutineResponse> {
+    return this.get<RoutineResponse>(`/v1/routines/${routineId}`);
   }
 
   /**
@@ -305,15 +324,15 @@ export class HevyClient {
   /**
    * Get a paginated list of exercise templates
    */
-  async getExerciseTemplates(options?: { page?: number; pageSize?: number }): Promise<any> {
-    return this.get<any>('/v1/exercise_templates', options as Record<string, string | number | boolean | undefined>);
+  async getExerciseTemplates(options?: { page?: number; pageSize?: number }): Promise<ExerciseTemplatesListResponse> {
+    return this.get<ExerciseTemplatesListResponse>('/v1/exercise_templates', options as Record<string, string | number | boolean | undefined>);
   }
 
   /**
    * Get a single exercise template by ID
    */
-  async getExerciseTemplate(exerciseTemplateId: string): Promise<any> {
-    return this.get<any>(`/v1/exercise_templates/${exerciseTemplateId}`);
+  async getExerciseTemplate(exerciseTemplateId: string): Promise<ExerciseTemplateResponse> {
+    return this.get<ExerciseTemplateResponse>(`/v1/exercise_templates/${exerciseTemplateId}`);
   }
 
   /**
@@ -323,7 +342,7 @@ export class HevyClient {
    * reuse the result for the session (subject to a short TTL). The cache is
    * invalidated when a custom exercise is created.
    */
-  async getAllExerciseTemplates(options?: { force?: boolean }): Promise<any[]> {
+  async getAllExerciseTemplates(options?: { force?: boolean }): Promise<ExerciseTemplate[]> {
     const now = Date.now();
     if (
       !options?.force &&
@@ -333,7 +352,7 @@ export class HevyClient {
       return this.exerciseTemplateCache.data;
     }
 
-    const all: any[] = [];
+    const all: ExerciseTemplate[] = [];
     const pageSize = 100;
     const MAX_PAGES = 20;
     let page = 1;
@@ -359,8 +378,8 @@ export class HevyClient {
   async getExerciseHistory(
     exerciseTemplateId: string,
     params?: { start_date?: string; end_date?: string }
-  ): Promise<any> {
-    return this.get<any>(
+  ): Promise<ExerciseHistoryResponse> {
+    return this.get<ExerciseHistoryResponse>(
       `/v1/exercise_history/${exerciseTemplateId}`,
       params as Record<string, string | number | boolean | undefined>
     );
@@ -373,15 +392,15 @@ export class HevyClient {
   /**
    * Get a paginated list of routine folders
    */
-  async getRoutineFolders(options?: { page?: number; pageSize?: number }): Promise<any> {
-    return this.get<any>('/v1/routine_folders', options as Record<string, string | number | boolean | undefined>);
+  async getRoutineFolders(options?: { page?: number; pageSize?: number }): Promise<RoutineFoldersListResponse> {
+    return this.get<RoutineFoldersListResponse>('/v1/routine_folders', options as Record<string, string | number | boolean | undefined>);
   }
 
   /**
    * Get a single routine folder by ID
    */
-  async getRoutineFolder(folderId: string): Promise<any> {
-    return this.get<any>(`/v1/routine_folders/${folderId}`);
+  async getRoutineFolder(folderId: string): Promise<RoutineFolderResponse> {
+    return this.get<RoutineFolderResponse>(`/v1/routine_folders/${folderId}`);
   }
 
   /**
@@ -408,8 +427,8 @@ export class HevyClient {
   /**
    * Get the authenticated user's info (id, name, public profile URL)
    */
-  async getUserInfo(): Promise<any> {
-    return this.get<any>('/v1/user/info');
+  async getUserInfo(): Promise<UserInfoResp> {
+    return this.get<UserInfoResp>('/v1/user/info');
   }
 
   // ============================================
@@ -419,15 +438,15 @@ export class HevyClient {
   /**
    * Get a paginated list of body measurements for the authenticated user
    */
-  async getBodyMeasurements(options?: { page?: number; pageSize?: number }): Promise<any> {
-    return this.get<any>('/v1/body_measurements', options as Record<string, string | number | boolean | undefined>);
+  async getBodyMeasurements(options?: { page?: number; pageSize?: number }): Promise<BodyMeasurementsListResponse> {
+    return this.get<BodyMeasurementsListResponse>('/v1/body_measurements', options as Record<string, string | number | boolean | undefined>);
   }
 
   /**
    * Get a single body measurement by date (YYYY-MM-DD)
    */
-  async getBodyMeasurement(date: string): Promise<any> {
-    return this.get<any>(`/v1/body_measurements/${date}`);
+  async getBodyMeasurement(date: string): Promise<BodyMeasurementResponse> {
+    return this.get<BodyMeasurementResponse>(`/v1/body_measurements/${date}`);
   }
 
   /**
@@ -453,8 +472,8 @@ export class HevyClient {
   /**
    * Get the current webhook subscription (url + auth_token), if any
    */
-  async getWebhookSubscription(): Promise<any> {
-    return this.get<any>('/v1/webhook-subscription');
+  async getWebhookSubscription(): Promise<WebhookSubscriptionResponse> {
+    return this.get<WebhookSubscriptionResponse>('/v1/webhook-subscription');
   }
 
   /**

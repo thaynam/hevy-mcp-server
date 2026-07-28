@@ -2300,7 +2300,6 @@
         "type": "object",
         "properties": {
           "exercise": {
-            "required": true,
             "type": "object",
             "properties": {
               "title": {
@@ -2334,7 +2333,10 @@
               }
             }
           }
-        }
+        },
+        "required": [
+          "exercise"
+        ]
       },
       "RoutineFolder": {
         "type": "object",

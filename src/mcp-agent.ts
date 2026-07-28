@@ -412,6 +412,18 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
           const result = await this.client.getRoutine(routine_id);
           const routine = result.routine;
 
+          if (!routine) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `No routine found with ID ${routine_id}`,
+                },
+              ],
+              structuredContent: { found: false, routine: null },
+            };
+          }
+
           return {
             content: [
               {
@@ -912,7 +924,7 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
       try {
         const result = await this.client.getUserInfo();
         // The API wraps the payload in a `data` object
-        const user = result?.data ?? result;
+        const user = result?.data;
 
         return {
           content: [
