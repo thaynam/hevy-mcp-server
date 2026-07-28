@@ -71,6 +71,7 @@ export const HEVY_TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
 	// Exercise templates / history
 	get_exercise_templates: readOnlyAnnotations("Get Exercise Templates"),
 	get_exercise_template: readOnlyAnnotations("Get Exercise Template"),
+	search_exercise_templates: readOnlyAnnotations("Search Exercise Templates"),
 	create_exercise_template: createAnnotations("Create Exercise Template"),
 	get_exercise_history: readOnlyAnnotations("Get Exercise History"),
 	// Routine folders

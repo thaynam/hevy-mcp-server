@@ -38,6 +38,7 @@ import {
   analyzeTrainingSummary,
   formatTrainingSummary,
 } from "./lib/analysis.js";
+import { filterExerciseTemplates } from "./lib/exercise-search.js";
 import { isNotFoundError, notFoundResponse } from "./lib/hevy-error-policy.js";
 import { applyToolAnnotations } from "./lib/tool-annotations.js";
 import { applyToolDescriptions } from "./lib/tool-descriptions.js";
@@ -565,6 +566,57 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
               `No exercise template found with ID ${exercise_template_id}`,
             );
           }
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "search_exercise_templates",
+      {
+        query: z
+          .string()
+          .describe("Text to search for in the exercise title (case-insensitive)"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe("Maximum number of results (default 20)")
+          .default(20),
+      },
+      async ({ query, limit }) => {
+        try {
+          const catalog = await this.client.getAllExerciseTemplates();
+          const matches = filterExerciseTemplates(catalog, query, limit);
+
+          const list =
+            matches
+              .map((t, index) => {
+                return `${index + 1}. ${t.title} (${t.type})\n   ID: ${t.id}\n   Primary: ${t.primary_muscle_group}${t.is_custom ? " [custom]" : ""}`;
+              })
+              .join("\n") || "No matching exercise templates found";
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Found ${matches.length} exercise template(s) matching "${query}" (searched ${catalog.length})`,
+              },
+              {
+                type: "text",
+                text: list,
+              },
+            ],
+            structuredContent: {
+              query,
+              count: matches.length,
+              searched: catalog.length,
+              exercise_templates: matches,
+            },
+          };
+        } catch (error) {
           return handleError(error);
         }
       },

@@ -29,7 +29,7 @@ describe("tool-descriptions", () => {
 	});
 
 	describe("HEVY_TOOL_DESCRIPTIONS map", () => {
-		it("covers exactly the annotated tools (all 27)", () => {
+		it("covers exactly the annotated tools (all 28)", () => {
 			expect(Object.keys(HEVY_TOOL_DESCRIPTIONS).sort()).toEqual(
 				Object.keys(HEVY_TOOL_ANNOTATIONS).sort(),
 			);

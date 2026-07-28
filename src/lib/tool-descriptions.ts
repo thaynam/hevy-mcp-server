@@ -93,6 +93,13 @@ export const HEVY_TOOL_DESCRIPTIONS: Record<string, string> = {
 			"Read-only. Returns one exercise template by ID (type, muscle groups, equipment).",
 		useCase: "Use when the template ID is known.",
 	}),
+	search_exercise_templates: describeTool({
+		summary:
+			"Read-only. Searches the exercise catalog by name and returns matching templates with their IDs.",
+		useCase:
+			"Use to find an exercise_template_id from a name (e.g. 'bench press') to build a workout/routine, instead of paging get_exercise_templates.",
+		note: "case-insensitive title match; limit defaults to 20. The catalog is cached per session.",
+	}),
 	create_exercise_template: describeTool({
 		summary: "Creates a custom exercise template on the account.",
 		useCase: "Use when an exercise isn't in Hevy's catalog.",

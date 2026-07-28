@@ -55,6 +55,10 @@ export class HevyClient {
   private retryDelayMs: number;
   private readonly maxDelayMs = 8000;
 
+  // Per-instance cache of the (mostly static) exercise-template catalog.
+  private exerciseTemplateCache: { data: any[]; expiresAt: number } | undefined;
+  private readonly exerciseCacheTtlMs = 5 * 60 * 1000;
+
   /**
    * Create a new Hevy API client
    */
@@ -313,6 +317,43 @@ export class HevyClient {
   }
 
   /**
+   * Get the full exercise-template catalog (all pages), cached per instance.
+   *
+   * The catalog is large and mostly static, so we page through it once and
+   * reuse the result for the session (subject to a short TTL). The cache is
+   * invalidated when a custom exercise is created.
+   */
+  async getAllExerciseTemplates(options?: { force?: boolean }): Promise<any[]> {
+    const now = Date.now();
+    if (
+      !options?.force &&
+      this.exerciseTemplateCache &&
+      this.exerciseTemplateCache.expiresAt > now
+    ) {
+      return this.exerciseTemplateCache.data;
+    }
+
+    const all: any[] = [];
+    const pageSize = 100;
+    const MAX_PAGES = 20;
+    let page = 1;
+    let pageCount = 1;
+
+    while (page <= pageCount && page <= MAX_PAGES) {
+      const result = await this.getExerciseTemplates({ page, pageSize });
+      all.push(...(result.exercise_templates ?? []));
+      pageCount = result.page_count ?? page;
+      page++;
+    }
+
+    this.exerciseTemplateCache = {
+      data: all,
+      expiresAt: now + this.exerciseCacheTtlMs,
+    };
+    return all;
+  }
+
+  /**
    * Get exercise history for a specific exercise template
    */
   async getExerciseHistory(
@@ -351,10 +392,13 @@ export class HevyClient {
   }
 
   /**
-   * Create a new custom exercise template
+   * Create a new custom exercise template.
+   * Invalidates the cached catalog so subsequent searches see the new exercise.
    */
   async createExerciseTemplate(exercise: any): Promise<any> {
-    return this.post<any>('/v1/exercise_templates', exercise);
+    const result = await this.post<any>('/v1/exercise_templates', exercise);
+    this.exerciseTemplateCache = undefined;
+    return result;
   }
 
   // ============================================

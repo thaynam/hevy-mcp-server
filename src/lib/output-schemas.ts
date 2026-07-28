@@ -45,6 +45,20 @@ export const HEVY_TOOL_OUTPUT_SCHEMAS: Record<string, z.ZodRawShape> = {
 	get_workouts_count: {
 		workout_count: z.number(),
 	},
+	search_exercise_templates: {
+		query: z.string(),
+		count: z.number(),
+		searched: z.number(),
+		exercise_templates: z.array(
+			z.object({
+				id: z.string().optional(),
+				title: z.string().optional(),
+				type: z.string().optional(),
+				primary_muscle_group: z.string().optional(),
+				is_custom: z.boolean(),
+			}),
+		),
+	},
 	get_user_info: {
 		id: z.string().optional(),
 		name: z.string().optional(),

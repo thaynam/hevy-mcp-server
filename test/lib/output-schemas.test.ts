@@ -17,9 +17,13 @@ function parseOutput(tool: string, value: unknown) {
 
 describe("output-schemas", () => {
 	describe("HEVY_TOOL_OUTPUT_SCHEMAS", () => {
-		it("only covers read tools", () => {
+		it("only covers read tools (never writes)", () => {
 			for (const name of Object.keys(HEVY_TOOL_OUTPUT_SCHEMAS)) {
-				expect(name.startsWith("get_"), name).toBe(true);
+				const isWrite =
+					name.startsWith("create_") ||
+					name.startsWith("update_") ||
+					name.startsWith("delete_");
+				expect(isWrite, name).toBe(false);
 			}
 		});
 	});
@@ -30,6 +34,25 @@ describe("output-schemas", () => {
 				true,
 			);
 			expect(parseOutput("get_workouts_count", {}).success).toBe(false);
+		});
+
+		it("search_exercise_templates", () => {
+			expect(
+				parseOutput("search_exercise_templates", {
+					query: "bench",
+					count: 1,
+					searched: 100,
+					exercise_templates: [
+						{
+							id: "A1",
+							title: "Bench Press",
+							type: "weight_reps",
+							primary_muscle_group: "chest",
+							is_custom: false,
+						},
+					],
+				}).success,
+			).toBe(true);
 		});
 
 		it("get_user_info accepts partial profiles", () => {
