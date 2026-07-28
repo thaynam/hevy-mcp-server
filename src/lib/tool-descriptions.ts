@@ -167,6 +167,13 @@ export const HEVY_TOOL_DESCRIPTIONS: Record<string, string> = {
 			"Use for a training-load/consistency overview instead of paging through get_workouts; reports workout count, per-week average, active days, total sets and volume (kg).",
 		note: "weeks defaults to 4 (1-52); scans the account's recent workouts.",
 	}),
+	get_progression_deltas: describeTool({
+		summary:
+			"Read-only. For each exercise in a session, returns the RAW diff vs. the previous occurrence of the same exercise (matched by exercise_template_id across earlier workouts).",
+		useCase:
+			"Use to get facts for a progression decision: current vs previous top set, effective sets (warmup excluded), volume, reps, RPE, and Epley estimated 1RM, plus raw deltas. Returns numbers only — no good/bad labels; the caller applies meaning (a load drop can be preservation in a cut or regression in a bulk).",
+		note: "current session defaults to the most recent workout; scans recent history to find each exercise's prior occurrence (previous is null on first-ever occurrence).",
+	}),
 	// Webhook subscription
 	get_webhook_subscription: describeTool({
 		summary:

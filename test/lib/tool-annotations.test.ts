@@ -44,8 +44,8 @@ describe("tool-annotations", () => {
 	});
 
 	describe("HEVY_TOOL_ANNOTATIONS map", () => {
-		it("covers all 28 tools", () => {
-			expect(Object.keys(HEVY_TOOL_ANNOTATIONS)).toHaveLength(28);
+		it("covers all 29 tools", () => {
+			expect(Object.keys(HEVY_TOOL_ANNOTATIONS)).toHaveLength(29);
 		});
 
 		it("marks every get_* tool read-only", () => {

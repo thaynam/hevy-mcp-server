@@ -45,6 +45,39 @@ function paginatedList(itemsKey: string): z.ZodRawShape {
 	};
 }
 
+const exerciseOccurrence = z.object({
+	workout_id: z.string(),
+	date: z.string(),
+	effective_sets: z.number(),
+	total_volume_kg: z.number(),
+	total_reps: z.number(),
+	max_weight_kg: z.number().nullable(),
+	best_estimated_1rm_kg: z.number().nullable(),
+	top_set: z
+		.object({
+			weight_kg: z.number(),
+			reps: z.number().nullable(),
+			rpe: z.number().nullable(),
+		})
+		.nullable(),
+});
+
+const progressionDelta = z.object({
+	effective_sets: z.number(),
+	total_volume_kg: z.number(),
+	total_reps: z.number(),
+	max_weight_kg: z.number().nullable(),
+	best_estimated_1rm_kg: z.number().nullable(),
+	top_set_weight_kg: z.number().nullable(),
+	top_set_reps: z.number().nullable(),
+});
+
+const occurrenceSession = z.object({
+	workout_id: z.string(),
+	date: z.string(),
+	exercise_count: z.number(),
+});
+
 const metricTrendObject = z.object({
 	field: z.string(),
 	first: z.number(),
@@ -137,6 +170,21 @@ export const HEVY_TOOL_OUTPUT_SCHEMAS: Record<string, z.ZodRawShape> = {
 		configured: z.boolean(),
 		url: z.string().optional(),
 		auth_token: z.string().optional(),
+	},
+	get_progression_deltas: {
+		session: occurrenceSession.nullable(),
+		exercises: z.array(
+			z.object({
+				exercise_template_id: z.string(),
+				exercise_title: z.string().optional(),
+				current: exerciseOccurrence,
+				previous: exerciseOccurrence.nullable(),
+				delta: progressionDelta.nullable(),
+			}),
+		),
+		scanned_workouts: z.number(),
+		exercises_without_previous: z.number(),
+		truncated: z.boolean(),
 	},
 };
 

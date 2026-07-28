@@ -258,3 +258,279 @@ export function formatTrainingSummary(
 		`Exercises: ${summary.totalExercises} | Sets: ${summary.totalSets} | Volume: ${summary.totalVolumeKg} kg`,
 	].join("\n");
 }
+
+// ── Progression deltas ──────────────────────────────────────────────────────
+//
+// Fact-only diff: for each exercise in a session, the raw metrics of the current
+// occurrence vs. the previous occurrence of the SAME exercise_template_id. No
+// classification (good/bad/plateau) — the consumer owns judgment, because the
+// same delta means opposite things depending on the user's phase (cut/bulk).
+// Warmup sets are excluded from every aggregation.
+
+/** The heaviest effective (non-warmup) set of an exercise occurrence. */
+export interface ProgressionTopSet {
+	weight_kg: number;
+	reps: number | null;
+	rpe: number | null;
+}
+
+/** Fact-only metrics for one occurrence of an exercise. */
+export interface ExerciseOccurrence {
+	workout_id: string;
+	date: string;
+	/** Count of non-warmup sets. */
+	effective_sets: number;
+	/** Sum of weight_kg × reps over effective sets. */
+	total_volume_kg: number;
+	/** Sum of reps over effective sets. */
+	total_reps: number;
+	max_weight_kg: number | null;
+	/** Best Epley estimate (weight × (1 + reps/30)) over effective sets. */
+	best_estimated_1rm_kg: number | null;
+	top_set: ProgressionTopSet | null;
+}
+
+/** Raw arithmetic difference (current − previous) per comparable field. */
+export interface ProgressionDelta {
+	effective_sets: number;
+	total_volume_kg: number;
+	total_reps: number;
+	max_weight_kg: number | null;
+	best_estimated_1rm_kg: number | null;
+	top_set_weight_kg: number | null;
+	top_set_reps: number | null;
+}
+
+export interface ExerciseProgression {
+	exercise_template_id: string;
+	exercise_title?: string;
+	current: ExerciseOccurrence;
+	previous: ExerciseOccurrence | null;
+	delta: ProgressionDelta | null;
+}
+
+export interface ProgressionDeltasResult {
+	session: { workout_id: string; date: string; exercise_count: number } | null;
+	exercises: ExerciseProgression[];
+	scanned_workouts: number;
+	exercises_without_previous: number;
+	truncated: boolean;
+}
+
+function isEffectiveSet(set: any): boolean {
+	// Only explicit warmup sets are excluded; every other type counts.
+	return set?.type !== "warmup";
+}
+
+function numeric(value: unknown): number | null {
+	return typeof value === "number" && !Number.isNaN(value) ? value : null;
+}
+
+/** Epley estimate; null unless both weight and reps are present and positive. */
+function estimatedOneRepMax(
+	weight: number | null,
+	reps: number | null,
+): number | null {
+	if (weight === null || reps === null || weight <= 0 || reps <= 0) return null;
+	return weight * (1 + reps / 30);
+}
+
+function workoutStart(workout: any): string {
+	return typeof workout?.start_time === "string" ? workout.start_time : "";
+}
+
+/** Computes the fact-only metrics for one exercise occurrence (warmup excluded). */
+export function computeExerciseOccurrence(
+	exercise: any,
+	workoutId: string,
+	date: string,
+): ExerciseOccurrence {
+	const sets: any[] = Array.isArray(exercise?.sets) ? exercise.sets : [];
+	const effective = sets.filter(isEffectiveSet);
+
+	let totalVolume = 0;
+	let totalReps = 0;
+	let maxWeight: number | null = null;
+	let best1rm: number | null = null;
+	let topSet: ProgressionTopSet | null = null;
+
+	for (const set of effective) {
+		const weight = numeric(set?.weight_kg);
+		const reps = numeric(set?.reps);
+		const rpe = numeric(set?.rpe);
+
+		if (weight !== null && reps !== null) totalVolume += weight * reps;
+		if (reps !== null) totalReps += reps;
+
+		if (weight !== null) {
+			if (maxWeight === null || weight > maxWeight) maxWeight = weight;
+
+			const isHeavier =
+				topSet === null ||
+				weight > topSet.weight_kg ||
+				(weight === topSet.weight_kg && (reps ?? 0) > (topSet.reps ?? 0));
+			if (isHeavier) topSet = { weight_kg: weight, reps, rpe };
+		}
+
+		const e1rm = estimatedOneRepMax(weight, reps);
+		if (e1rm !== null && (best1rm === null || e1rm > best1rm)) best1rm = e1rm;
+	}
+
+	return {
+		workout_id: workoutId,
+		date,
+		effective_sets: effective.length,
+		total_volume_kg: roundTo2(totalVolume),
+		total_reps: totalReps,
+		max_weight_kg: maxWeight,
+		best_estimated_1rm_kg: best1rm !== null ? roundTo2(best1rm) : null,
+		top_set: topSet,
+	};
+}
+
+function subtractNullable(a: number | null, b: number | null): number | null {
+	return a !== null && b !== null ? roundTo2(a - b) : null;
+}
+
+function computeProgressionDelta(
+	current: ExerciseOccurrence,
+	previous: ExerciseOccurrence,
+): ProgressionDelta {
+	return {
+		effective_sets: current.effective_sets - previous.effective_sets,
+		total_volume_kg: roundTo2(current.total_volume_kg - previous.total_volume_kg),
+		total_reps: current.total_reps - previous.total_reps,
+		max_weight_kg: subtractNullable(current.max_weight_kg, previous.max_weight_kg),
+		best_estimated_1rm_kg: subtractNullable(
+			current.best_estimated_1rm_kg,
+			previous.best_estimated_1rm_kg,
+		),
+		top_set_weight_kg: subtractNullable(
+			current.top_set?.weight_kg ?? null,
+			previous.top_set?.weight_kg ?? null,
+		),
+		top_set_reps: subtractNullable(
+			current.top_set?.reps ?? null,
+			previous.top_set?.reps ?? null,
+		),
+	};
+}
+
+/**
+ * For each exercise in the current session, finds the previous occurrence of the
+ * same exercise_template_id among earlier workouts and returns the raw diff.
+ *
+ * @param currentWorkout - The session to analyze
+ * @param priorWorkouts - Earlier workouts (any order); matched by template_id
+ * @param options.scannedWorkouts - How many workouts the caller scanned
+ * @param options.truncated - Whether the caller hit its scan cap
+ */
+export function analyzeProgressionDeltas(
+	currentWorkout: any,
+	priorWorkouts: any[],
+	options: { scannedWorkouts: number; truncated: boolean },
+): ProgressionDeltasResult {
+	const currentId =
+		typeof currentWorkout?.id === "string" ? currentWorkout.id : "";
+	const currentDate = workoutStart(currentWorkout).slice(0, 10);
+	const currentExercises: any[] = Array.isArray(currentWorkout?.exercises)
+		? currentWorkout.exercises
+		: [];
+
+	// Earlier workouts, most recent first, so the first match is the closest prior.
+	const priors = [...priorWorkouts].sort((a, b) => {
+		const da = workoutStart(a);
+		const db = workoutStart(b);
+		return da < db ? 1 : da > db ? -1 : 0;
+	});
+
+	let withoutPrevious = 0;
+	const exercises: ExerciseProgression[] = currentExercises.map((exercise) => {
+		const templateId =
+			typeof exercise?.exercise_template_id === "string"
+				? exercise.exercise_template_id
+				: "";
+		const current = computeExerciseOccurrence(exercise, currentId, currentDate);
+
+		let previous: ExerciseOccurrence | null = null;
+		for (const workout of priors) {
+			const exs: any[] = Array.isArray(workout?.exercises)
+				? workout.exercises
+				: [];
+			const match = exs.find(
+				(e) => e?.exercise_template_id === templateId,
+			);
+			if (match) {
+				previous = computeExerciseOccurrence(
+					match,
+					typeof workout?.id === "string" ? workout.id : "",
+					workoutStart(workout).slice(0, 10),
+				);
+				break;
+			}
+		}
+		if (previous === null) withoutPrevious++;
+
+		const entry: ExerciseProgression = {
+			exercise_template_id: templateId,
+			current,
+			previous,
+			delta: previous ? computeProgressionDelta(current, previous) : null,
+		};
+		if (typeof exercise?.title === "string") {
+			entry.exercise_title = exercise.title;
+		}
+		return entry;
+	});
+
+	return {
+		session: currentId
+			? {
+					workout_id: currentId,
+					date: currentDate,
+					exercise_count: currentExercises.length,
+				}
+			: null,
+		exercises,
+		scanned_workouts: options.scannedWorkouts,
+		exercises_without_previous: withoutPrevious,
+		truncated: options.truncated,
+	};
+}
+
+function formatTopSet(top: ProgressionTopSet | null): string {
+	if (!top) return "n/a";
+	return `${top.weight_kg}kg×${top.reps ?? "?"}`;
+}
+
+/** Neutral, factual rendering — no good/bad language. */
+export function formatProgressionDeltas(result: ProgressionDeltasResult): string {
+	if (!result.session || result.exercises.length === 0) {
+		return "No exercises to compare in the current session.";
+	}
+
+	const lines: string[] = [];
+	lines.push(
+		`Progression deltas for session ${result.session.date} (${result.session.exercise_count} exercise(s)):`,
+	);
+	for (const ex of result.exercises) {
+		const title = ex.exercise_title ?? ex.exercise_template_id;
+		const c = ex.current;
+		if (!ex.previous) {
+			lines.push(
+				`${title}: no previous occurrence found. Current top set ${formatTopSet(c.top_set)}, effective sets ${c.effective_sets}, volume ${c.total_volume_kg}kg.`,
+			);
+		} else {
+			const p = ex.previous;
+			lines.push(
+				`${title}: top set ${formatTopSet(c.top_set)} vs ${formatTopSet(p.top_set)}; effective sets ${c.effective_sets} vs ${p.effective_sets}; volume ${c.total_volume_kg} vs ${p.total_volume_kg}kg (prev ${p.date}).`,
+			);
+		}
+	}
+	if (result.truncated) {
+		lines.push(
+			`(Note: only the first ${result.scanned_workouts} workouts were scanned; some previous occurrences may be older.)`,
+		);
+	}
+	return lines.join("\n");
+}

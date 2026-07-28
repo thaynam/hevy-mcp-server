@@ -37,6 +37,8 @@ import {
   formatBodyProgress,
   analyzeTrainingSummary,
   formatTrainingSummary,
+  analyzeProgressionDeltas,
+  formatProgressionDeltas,
 } from "./lib/analysis.js";
 import { filterExerciseTemplates } from "./lib/exercise-search.js";
 import { isNotFoundError } from "./lib/hevy-error-policy.js";
@@ -1255,6 +1257,126 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
               {
                 type: "text",
                 text: reportParts.join("\n"),
+              },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,
+              },
+            ],
+            structuredContent: summary,
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "get_progression_deltas",
+      {
+        workout_id: z
+          .string()
+          .optional()
+          .describe(
+            "Workout to analyze as the current session (default: the most recent workout)",
+          ),
+      },
+      async ({ workout_id }) => {
+        try {
+          // Page through workouts (pageSize max 10), capped for safety. We need
+          // enough history to find each exercise's previous occurrence.
+          const MAX_PAGES = 20;
+          const pageSize = 10;
+          const workouts: any[] = [];
+          let page = 1;
+          let pageCount = 1;
+          let scannedAllPages = true;
+
+          while (page <= pageCount) {
+            if (page > MAX_PAGES) {
+              scannedAllPages = false;
+              break;
+            }
+            let result: any;
+            try {
+              result = await this.client.getWorkouts({ page, pageSize });
+            } catch (error) {
+              if (isNotFoundError(error)) break;
+              throw error;
+            }
+            workouts.push(...(result.workouts ?? []));
+            pageCount = result.page_count ?? page;
+            page++;
+          }
+
+          // Resolve the "current" session.
+          let current: any;
+          if (workout_id) {
+            current = workouts.find((w) => w.id === workout_id);
+            if (!current) {
+              try {
+                current = await this.client.getWorkout(workout_id);
+              } catch (error) {
+                if (isNotFoundError(error)) {
+                  return {
+                    content: [
+                      {
+                        type: "text",
+                        text: `No workout found with ID ${workout_id}`,
+                      },
+                    ],
+                    structuredContent: {
+                      session: null,
+                      exercises: [],
+                      scanned_workouts: workouts.length,
+                      exercises_without_previous: 0,
+                      truncated: !scannedAllPages,
+                    },
+                  };
+                }
+                throw error;
+              }
+            }
+          } else {
+            current = [...workouts].sort((a, b) => {
+              const da = typeof a.start_time === "string" ? a.start_time : "";
+              const db = typeof b.start_time === "string" ? b.start_time : "";
+              return da < db ? 1 : da > db ? -1 : 0;
+            })[0];
+          }
+
+          if (!current) {
+            return {
+              content: [{ type: "text", text: "No workouts found." }],
+              structuredContent: {
+                session: null,
+                exercises: [],
+                scanned_workouts: workouts.length,
+                exercises_without_previous: 0,
+                truncated: !scannedAllPages,
+              },
+            };
+          }
+
+          const currentStart =
+            typeof current.start_time === "string" ? current.start_time : "";
+          const priors = workouts.filter(
+            (w) =>
+              w.id !== current.id &&
+              (typeof w.start_time === "string" ? w.start_time : "") <
+                currentStart,
+          );
+
+          const summary = analyzeProgressionDeltas(current, priors, {
+            scannedWorkouts: workouts.length,
+            truncated: !scannedAllPages,
+          });
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: formatProgressionDeltas(summary),
               },
               {
                 type: "text",

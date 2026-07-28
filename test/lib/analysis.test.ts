@@ -4,6 +4,8 @@ import {
 	formatBodyProgress,
 	analyzeTrainingSummary,
 	formatTrainingSummary,
+	analyzeProgressionDeltas,
+	computeExerciseOccurrence,
 } from "../../src/lib/analysis.js";
 
 describe("analysis - analyzeBodyProgress", () => {
@@ -167,5 +169,157 @@ describe("analysis - analyzeTrainingSummary", () => {
 	it("formats a no-data message", () => {
 		const s = analyzeTrainingSummary([], "2024-07-15", 4);
 		expect(formatTrainingSummary(s, 4)).toContain("No workouts logged");
+	});
+});
+
+describe("analysis - computeExerciseOccurrence", () => {
+	it("excludes warmup sets from every aggregation", () => {
+		const occ = computeExerciseOccurrence(
+			{
+				sets: [
+					{ type: "warmup", weight_kg: 60, reps: 10 }, // excluded
+					{ type: "normal", weight_kg: 100, reps: 5 }, // 500
+					{ type: "normal", weight_kg: 100, reps: 5 }, // 500
+				],
+			},
+			"w1",
+			"2024-08-01",
+		);
+		expect(occ.effective_sets).toBe(2);
+		expect(occ.total_volume_kg).toBe(1000);
+		expect(occ.total_reps).toBe(10);
+		expect(occ.max_weight_kg).toBe(100);
+	});
+
+	it("picks the heaviest effective set as top_set and computes Epley 1RM", () => {
+		const occ = computeExerciseOccurrence(
+			{
+				sets: [
+					{ type: "normal", weight_kg: 90, reps: 8 },
+					{ type: "normal", weight_kg: 100, reps: 5, rpe: 8 },
+				],
+			},
+			"w1",
+			"2024-08-01",
+		);
+		expect(occ.top_set).toEqual({ weight_kg: 100, reps: 5, rpe: 8 });
+		// Epley best = max(90*(1+8/30)=114, 100*(1+5/30)=116.67) = 116.67
+		expect(occ.best_estimated_1rm_kg).toBe(116.67);
+	});
+
+	it("handles bodyweight/duration sets (no weight) gracefully", () => {
+		const occ = computeExerciseOccurrence(
+			{ sets: [{ type: "normal", reps: 12 }, { type: "normal", reps: 10 }] },
+			"w1",
+			"2024-08-01",
+		);
+		expect(occ.effective_sets).toBe(2);
+		expect(occ.total_reps).toBe(22);
+		expect(occ.total_volume_kg).toBe(0);
+		expect(occ.max_weight_kg).toBeNull();
+		expect(occ.best_estimated_1rm_kg).toBeNull();
+		expect(occ.top_set).toBeNull();
+	});
+});
+
+describe("analysis - analyzeProgressionDeltas", () => {
+	const bench = "TPL_BENCH";
+	const squat = "TPL_SQUAT";
+
+	const current = {
+		id: "w_today",
+		start_time: "2024-08-10T10:00:00Z",
+		exercises: [
+			{
+				exercise_template_id: bench,
+				title: "Bench Press",
+				sets: [
+					{ type: "warmup", weight_kg: 60, reps: 10 },
+					{ type: "normal", weight_kg: 102.5, reps: 5 },
+				],
+			},
+		],
+	};
+
+	// Most recent bench occurrence is 08-05; there's a squat-only day in between.
+	const priors = [
+		{
+			id: "w_squat",
+			start_time: "2024-08-08T10:00:00Z",
+			exercises: [
+				{ exercise_template_id: squat, sets: [{ type: "normal", weight_kg: 140, reps: 5 }] },
+			],
+		},
+		{
+			id: "w_bench_prev",
+			start_time: "2024-08-05T10:00:00Z",
+			exercises: [
+				{
+					exercise_template_id: bench,
+					sets: [
+						{ type: "warmup", weight_kg: 60, reps: 10 },
+						{ type: "normal", weight_kg: 100, reps: 5 },
+					],
+				},
+			],
+		},
+		{
+			id: "w_bench_older",
+			start_time: "2024-07-20T10:00:00Z",
+			exercises: [
+				{ exercise_template_id: bench, sets: [{ type: "normal", weight_kg: 95, reps: 5 }] },
+			],
+		},
+	];
+
+	it("matches the previous occurrence by template_id, skipping intermediate workouts", () => {
+		const r = analyzeProgressionDeltas(current, priors, {
+			scannedWorkouts: 4,
+			truncated: false,
+		});
+		expect(r.session?.workout_id).toBe("w_today");
+		const benchEntry = r.exercises[0];
+		// Closest prior bench day is 08-05, NOT the squat day in between
+		expect(benchEntry.previous?.workout_id).toBe("w_bench_prev");
+		expect(benchEntry.previous?.date).toBe("2024-08-05");
+	});
+
+	it("returns raw deltas (current − previous), no labels", () => {
+		const r = analyzeProgressionDeltas(current, priors, {
+			scannedWorkouts: 4,
+			truncated: false,
+		});
+		const d = r.exercises[0].delta;
+		expect(d?.top_set_weight_kg).toBe(2.5); // 102.5 − 100
+		expect(d?.max_weight_kg).toBe(2.5);
+		expect(d?.effective_sets).toBe(0);
+	});
+
+	it("marks first-ever occurrences with previous null and counts them", () => {
+		const r = analyzeProgressionDeltas(
+			{
+				id: "w1",
+				start_time: "2024-08-10T10:00:00Z",
+				exercises: [
+					{ exercise_template_id: "NEW", sets: [{ type: "normal", weight_kg: 50, reps: 8 }] },
+				],
+			},
+			priors,
+			{ scannedWorkouts: 4, truncated: false },
+		);
+		expect(r.exercises[0].previous).toBeNull();
+		expect(r.exercises[0].delta).toBeNull();
+		expect(r.exercises_without_previous).toBe(1);
+	});
+
+	it("passes through scan metadata and handles an empty session", () => {
+		const r = analyzeProgressionDeltas(
+			{ id: "w1", start_time: "2024-08-10T10:00:00Z", exercises: [] },
+			[],
+			{ scannedWorkouts: 7, truncated: true },
+		);
+		expect(r.exercises).toEqual([]);
+		expect(r.scanned_workouts).toBe(7);
+		expect(r.truncated).toBe(true);
 	});
 });
