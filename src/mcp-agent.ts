@@ -32,6 +32,9 @@ import {
   PAGINATION_LIMITS,
 } from "./lib/transforms.js";
 import { handleError } from "./lib/errors.js";
+import { isNotFoundError, notFoundResponse } from "./lib/hevy-error-policy.js";
+import { applyToolAnnotations } from "./lib/tool-annotations.js";
+import { applyToolDescriptions } from "./lib/tool-descriptions.js";
 import type { Props } from "./utils.js";
 
 // Define our MCP agent with Hevy API tools and OAuth support
@@ -142,6 +145,9 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
             ],
           };
         } catch (error) {
+          if (isNotFoundError(error)) {
+            return notFoundResponse(`No workout found with ID ${workout_id}`);
+          }
           return handleError(error);
         }
       },
@@ -383,6 +389,9 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
             ],
           };
         } catch (error) {
+          if (isNotFoundError(error)) {
+            return notFoundResponse(`No routine found with ID ${routine_id}`);
+          }
           return handleError(error);
         }
       },
@@ -540,6 +549,11 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
             ],
           };
         } catch (error) {
+          if (isNotFoundError(error)) {
+            return notFoundResponse(
+              `No exercise template found with ID ${exercise_template_id}`,
+            );
+          }
           return handleError(error);
         }
       },
@@ -730,6 +744,9 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
             ],
           };
         } catch (error) {
+          if (isNotFoundError(error)) {
+            return notFoundResponse(`No routine folder found with ID ${folder_id}`);
+          }
           return handleError(error);
         }
       },
@@ -875,6 +892,9 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
             ],
           };
         } catch (error) {
+          if (isNotFoundError(error)) {
+            return notFoundResponse(`No body measurement found for ${date}`);
+          }
           return handleError(error);
         }
       },
@@ -968,6 +988,9 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
           ],
         };
       } catch (error) {
+        if (isNotFoundError(error)) {
+          return notFoundResponse("No webhook subscription is configured.");
+        }
         return handleError(error);
       }
     });
@@ -1017,5 +1040,10 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
         return handleError(error);
       }
     });
+
+    // Attach MCP annotation hints (readOnly/destructive/idempotent/openWorld)
+    // and descriptions to every registered tool.
+    applyToolAnnotations(this.server);
+    applyToolDescriptions(this.server);
   }
 }
