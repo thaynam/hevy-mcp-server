@@ -18,7 +18,7 @@ It exposes Hevy data and actions as MCP tools for AI clients, with OAuth 2.1 aut
 - **Exercise templates/history:** `get_exercise_templates`, `get_exercise_template`, `create_exercise_template`, `get_exercise_history`
 - **Routine folders:** `get_routine_folders`, `get_routine_folder`, `create_routine_folder`
 - **User:** `get_user_info`
-- **Body measurements:** `get_body_measurements`, `get_body_measurement`, `create_body_measurement`, `update_body_measurement`
+- **Body measurements:** `get_body_measurements`, `get_body_measurement`, `create_body_measurement`, `update_body_measurement`, `get_body_progress`
 - **Webhooks:** `get_webhook_subscription`, `create_webhook_subscription`, `delete_webhook_subscription`
 
 ## Quick start (local)

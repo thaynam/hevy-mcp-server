@@ -146,6 +146,13 @@ export const HEVY_TOOL_DESCRIPTIONS: Record<string, string> = {
 		useCase: "Use to correct a logged entry.",
 		note: "the date must already exist (404 otherwise).",
 	}),
+	get_body_progress: describeTool({
+		summary:
+			"Read-only. Summarizes body-measurement trends (weight, body-fat, circumferences) over the last N weeks.",
+		useCase:
+			"Use to see progress/direction at a glance instead of paging through get_body_measurements; each metric reports first → last, change, and count.",
+		note: "weeks defaults to 8 (1-52); scans the account's recent measurements.",
+	}),
 	// Webhook subscription
 	get_webhook_subscription: describeTool({
 		summary:

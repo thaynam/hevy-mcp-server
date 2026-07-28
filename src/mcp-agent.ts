@@ -32,6 +32,7 @@ import {
   PAGINATION_LIMITS,
 } from "./lib/transforms.js";
 import { handleError } from "./lib/errors.js";
+import { analyzeBodyProgress, formatBodyProgress } from "./lib/analysis.js";
 import { isNotFoundError, notFoundResponse } from "./lib/hevy-error-policy.js";
 import { applyToolAnnotations } from "./lib/tool-annotations.js";
 import { applyToolDescriptions } from "./lib/tool-descriptions.js";
@@ -958,6 +959,77 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
               {
                 type: "text",
                 text: JSON.stringify(result, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "get_body_progress",
+      {
+        weeks: z
+          .number()
+          .int()
+          .min(1)
+          .max(52)
+          .optional()
+          .describe("Number of recent weeks to analyze (1-52)")
+          .default(8),
+      },
+      async ({ weeks }) => {
+        try {
+          const since = new Date(Date.now() - weeks * 7 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10);
+
+          // Page through body measurements (pageSize max 10), capped for safety.
+          // Order isn't guaranteed, so we collect entries and filter by date.
+          const MAX_PAGES = 20;
+          const pageSize = 10;
+          const measurements: any[] = [];
+          let page = 1;
+          let pageCount = 1;
+          let scannedAllPages = true;
+
+          while (page <= pageCount) {
+            if (page > MAX_PAGES) {
+              scannedAllPages = false;
+              break;
+            }
+            let result: any;
+            try {
+              result = await this.client.getBodyMeasurements({ page, pageSize });
+            } catch (error) {
+              // A 404 means an empty account or a page past the last one.
+              if (isNotFoundError(error)) break;
+              throw error;
+            }
+            measurements.push(...(result.body_measurements ?? []));
+            pageCount = result.page_count ?? page;
+            page++;
+          }
+
+          const summary = analyzeBodyProgress(measurements, since);
+          const reportParts = [formatBodyProgress(summary, weeks)];
+          if (!scannedAllPages) {
+            reportParts.push(
+              `\n(Note: only the first ${MAX_PAGES} pages were scanned; older measurements may exist.)`,
+            );
+          }
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: reportParts.join("\n"),
+              },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,
               },
             ],
           };

@@ -403,7 +403,7 @@ export function validateDate(dateString: string, fieldName: string): void {
 /**
  * Numeric metric fields on a body measurement (all optional/nullable in the API)
  */
-const BODY_MEASUREMENT_METRIC_FIELDS = [
+export const BODY_MEASUREMENT_METRIC_FIELDS = [
 	"weight_kg",
 	"lean_mass_kg",
 	"fat_percent",
