@@ -1285,12 +1285,32 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
           .describe(
             "Workout to analyze as the current session (default: the most recent workout)",
           ),
+        history_depth: z
+          .number()
+          .int()
+          .min(1)
+          .max(20)
+          .optional()
+          .describe(
+            "Prior occurrences to return per exercise (default 1). When >1, each exercise gets an `occurrences` array (current + priors, most recent first).",
+          )
+          .default(1),
+        max_pages: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe(
+            "Max workout pages to scan (~10 workouts/page). Default 20; raise for deep history.",
+          )
+          .default(20),
       },
-      async ({ workout_id }) => {
+      async ({ workout_id, history_depth, max_pages }) => {
         try {
           // Page through workouts (pageSize max 10), capped for safety. We need
           // enough history to find each exercise's previous occurrence.
-          const MAX_PAGES = 20;
+          const MAX_PAGES = max_pages;
           const pageSize = 10;
           const workouts: any[] = [];
           let page = 1;
@@ -1375,6 +1395,7 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
           const summary = analyzeProgressionDeltas(current, priors, {
             scannedWorkouts: workouts.length,
             truncated: !scannedAllPages,
+            historyDepth: history_depth,
           });
 
           return {
@@ -1403,10 +1424,20 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
           .string()
           .optional()
           .describe("Restrict to a single exercise template (default: all exercises)"),
+        max_pages: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe(
+            "Max workout pages to scan (~10 workouts/page). Default 20; raise so records aren't limited to the recent window.",
+          )
+          .default(20),
       },
-      async ({ exercise_template_id }) => {
+      async ({ exercise_template_id, max_pages }) => {
         try {
-          const MAX_PAGES = 20;
+          const MAX_PAGES = max_pages;
           const pageSize = 10;
           const workouts: any[] = [];
           let page = 1;
@@ -1495,10 +1526,20 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
           .describe(
             "Anchor instance; returns the instance before it (default: the most recent instance)",
           ),
+        max_pages: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe(
+            "Max workout pages to scan (~10 workouts/page). Default 20; raise for deep history.",
+          )
+          .default(20),
       },
-      async ({ routine_id, before_workout_id }) => {
+      async ({ routine_id, before_workout_id, max_pages }) => {
         try {
-          const MAX_PAGES = 20;
+          const MAX_PAGES = max_pages;
           const pageSize = 10;
           const workouts: any[] = [];
           let page = 1;
@@ -1557,28 +1598,51 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
           .optional()
           .describe("Number of recent weeks to include (1-52)")
           .default(4),
+        include_secondary: z
+          .boolean()
+          .optional()
+          .describe(
+            "When true, also returns a separate by_muscle_group_secondary block (sets/volume where the muscle is a secondary mover). Never summed into primary.",
+          )
+          .default(false),
+        max_pages: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe(
+            "Max workout pages to scan (~10 workouts/page). Default 20; raise for deep history.",
+          )
+          .default(20),
       },
-      async ({ weeks }) => {
+      async ({ weeks, include_secondary, max_pages }) => {
         try {
           const since = new Date(Date.now() - weeks * 7 * 24 * 60 * 60 * 1000)
             .toISOString()
             .slice(0, 10);
 
-          // Catalog map: template_id -> primary_muscle_group (cached per session).
+          // Catalog maps: template_id -> primary / secondary muscle groups
+          // (catalog is cached per session).
           const catalog = await this.client.getAllExerciseTemplates();
           const muscleGroupByTemplate: Record<string, string> = {};
+          const secondaryByTemplate: Record<string, string[]> = {};
           for (const template of catalog) {
-            if (
-              typeof (template as any)?.id === "string" &&
-              typeof (template as any)?.primary_muscle_group === "string"
-            ) {
-              muscleGroupByTemplate[(template as any).id] = (
+            const id = (template as any)?.id;
+            if (typeof id !== "string") continue;
+            if (typeof (template as any)?.primary_muscle_group === "string") {
+              muscleGroupByTemplate[id] = (template as any).primary_muscle_group;
+            }
+            if (Array.isArray((template as any)?.secondary_muscle_groups)) {
+              secondaryByTemplate[id] = (
                 template as any
-              ).primary_muscle_group;
+              ).secondary_muscle_groups.filter(
+                (m: unknown) => typeof m === "string",
+              );
             }
           }
 
-          const MAX_PAGES = 20;
+          const MAX_PAGES = max_pages;
           const pageSize = 10;
           const workouts: any[] = [];
           let page = 1;
@@ -1605,7 +1669,10 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
             workouts,
             muscleGroupByTemplate,
             since,
-            { truncated: !scannedAllPages },
+            {
+              truncated: !scannedAllPages,
+              ...(include_secondary ? { secondaryByTemplate } : {}),
+            },
           );
 
           const rows =

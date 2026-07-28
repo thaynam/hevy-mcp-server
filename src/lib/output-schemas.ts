@@ -70,6 +70,14 @@ const progressionDelta = z.object({
 	best_estimated_1rm_kg: z.number().nullable(),
 	top_set_weight_kg: z.number().nullable(),
 	top_set_reps: z.number().nullable(),
+	top_set_rpe: z.number().nullable(),
+});
+
+const muscleGroupVolume = z.object({
+	muscle_group: z.string(),
+	effective_sets: z.number(),
+	total_volume_kg: z.number(),
+	exercise_count: z.number(),
 });
 
 const occurrenceSession = z.object({
@@ -202,6 +210,7 @@ export const HEVY_TOOL_OUTPUT_SCHEMAS: Record<string, z.ZodRawShape> = {
 				current: exerciseOccurrence,
 				previous: exerciseOccurrence.nullable(),
 				delta: progressionDelta.nullable(),
+				occurrences: z.array(exerciseOccurrence).optional(),
 			}),
 		),
 		scanned_workouts: z.number(),
@@ -246,15 +255,10 @@ export const HEVY_TOOL_OUTPUT_SCHEMAS: Record<string, z.ZodRawShape> = {
 	get_muscle_balance: {
 		since: z.string(),
 		workouts_counted: z.number(),
-		by_muscle_group: z.array(
-			z.object({
-				muscle_group: z.string(),
-				effective_sets: z.number(),
-				total_volume_kg: z.number(),
-				exercise_count: z.number(),
-			}),
-		),
+		by_muscle_group: z.array(muscleGroupVolume),
 		unmapped_exercises: z.number(),
+		unmapped_exercise_template_ids: z.array(z.string()),
+		by_muscle_group_secondary: z.array(muscleGroupVolume).optional(),
 		truncated: z.boolean(),
 	},
 };

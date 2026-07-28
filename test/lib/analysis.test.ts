@@ -350,6 +350,44 @@ describe("analysis - analyzeProgressionDeltas", () => {
 		expect(r.scanned_workouts).toBe(7);
 		expect(r.truncated).toBe(true);
 	});
+
+	it("includes top_set_rpe delta (fatigue signal) and null when RPE missing", () => {
+		const withRpe = analyzeProgressionDeltas(
+			{ id: "w", start_time: "2024-08-10T10:00:00Z", exercises: [{ exercise_template_id: "B", sets: [{ type: "normal", weight_kg: 100, reps: 5, rpe: 9 }] }] },
+			[{ id: "p", start_time: "2024-08-03T10:00:00Z", exercises: [{ exercise_template_id: "B", sets: [{ type: "normal", weight_kg: 100, reps: 5, rpe: 7.5 }] }] }],
+			{ scannedWorkouts: 2, truncated: false },
+		);
+		// Same load × reps, RPE up 1.5 — hidden fatigue, as a raw number
+		expect(withRpe.exercises[0].delta?.top_set_rpe).toBe(1.5);
+		expect(withRpe.exercises[0].previous?.top_set?.rpe).toBe(7.5);
+
+		const noRpe = analyzeProgressionDeltas(
+			{ id: "w", start_time: "2024-08-10T10:00:00Z", exercises: [{ exercise_template_id: "B", sets: [{ type: "normal", weight_kg: 100, reps: 5 }] }] },
+			[{ id: "p", start_time: "2024-08-03T10:00:00Z", exercises: [{ exercise_template_id: "B", sets: [{ type: "normal", weight_kg: 100, reps: 5 }] }] }],
+			{ scannedWorkouts: 2, truncated: false },
+		);
+		expect(noRpe.exercises[0].delta?.top_set_rpe).toBeNull();
+	});
+
+	it("returns an occurrences array (current + priors) when history_depth > 1", () => {
+		const current = { id: "w0", start_time: "2024-08-10T10:00:00Z", exercises: [{ exercise_template_id: "B", sets: [{ type: "normal", weight_kg: 100, reps: 5 }] }] };
+		const priors = [
+			{ id: "w1", start_time: "2024-08-05T10:00:00Z", exercises: [{ exercise_template_id: "B", sets: [{ type: "normal", weight_kg: 97.5, reps: 5 }] }] },
+			{ id: "w2", start_time: "2024-07-28T10:00:00Z", exercises: [{ exercise_template_id: "B", sets: [{ type: "normal", weight_kg: 95, reps: 5 }] }] },
+			{ id: "w3", start_time: "2024-07-20T10:00:00Z", exercises: [{ exercise_template_id: "B", sets: [{ type: "normal", weight_kg: 92.5, reps: 5 }] }] },
+		];
+		const r = analyzeProgressionDeltas(current, priors, { scannedWorkouts: 4, truncated: false, historyDepth: 2 });
+		expect(r.exercises[0].occurrences?.map((o) => o.workout_id)).toEqual(["w0", "w1", "w2"]);
+	});
+
+	it("omits occurrences at the default history_depth of 1", () => {
+		const r = analyzeProgressionDeltas(
+			{ id: "w0", start_time: "2024-08-10T10:00:00Z", exercises: [{ exercise_template_id: "B", sets: [{ type: "normal", weight_kg: 100, reps: 5 }] }] },
+			[],
+			{ scannedWorkouts: 1, truncated: false },
+		);
+		expect(r.exercises[0].occurrences).toBeUndefined();
+	});
 });
 
 describe("analysis - analyzePersonalRecords", () => {
@@ -519,5 +557,54 @@ describe("analysis - analyzeMuscleBalance", () => {
 		expect(r.unmapped_exercises).toBe(1);
 		// CURL (biceps) is in June, outside the window → not present
 		expect(r.by_muscle_group.find((g) => g.muscle_group === "biceps")).toBeUndefined();
+	});
+
+	it("returns the distinct unmapped template_ids, not just the count", () => {
+		const r = analyzeMuscleBalance(
+			[
+				{
+					start_time: "2024-08-10T10:00:00Z",
+					exercises: [
+						{ exercise_template_id: "UNK1", sets: [{ type: "normal", reps: 10 }] },
+						{ exercise_template_id: "UNK1", sets: [{ type: "normal", reps: 8 }] },
+						{ exercise_template_id: "UNK2", sets: [{ type: "normal", reps: 8 }] },
+					],
+				},
+			],
+			{},
+			"2024-01-01",
+			{ truncated: false },
+		);
+		expect(r.unmapped_exercises).toBe(3); // occurrences
+		expect([...r.unmapped_exercise_template_ids].sort()).toEqual(["UNK1", "UNK2"]); // distinct
+	});
+
+	it("returns a separate secondary block when requested, never merged into primary", () => {
+		const r = analyzeMuscleBalance(
+			[
+				{
+					start_time: "2024-08-10T10:00:00Z",
+					exercises: [
+						{ exercise_template_id: "BENCH", sets: [{ type: "warmup", weight_kg: 60, reps: 10 }, { type: "normal", weight_kg: 100, reps: 5 }, { type: "normal", weight_kg: 100, reps: 5 }] },
+					],
+				},
+			],
+			{ BENCH: "chest" },
+			"2024-01-01",
+			{ truncated: false, secondaryByTemplate: { BENCH: ["triceps", "shoulders"] } },
+		);
+		// Primary: chest gets the 2 effective sets (warmup excluded)
+		expect(r.by_muscle_group.find((g) => g.muscle_group === "chest")?.effective_sets).toBe(2);
+		// Secondary block attributes the same 2 sets to triceps AND shoulders
+		expect(r.by_muscle_group_secondary?.find((g) => g.muscle_group === "triceps")?.effective_sets).toBe(2);
+		expect(r.by_muscle_group_secondary?.find((g) => g.muscle_group === "shoulders")?.total_volume_kg).toBe(1000);
+		// Never merged: triceps is NOT in the primary block
+		expect(r.by_muscle_group.find((g) => g.muscle_group === "triceps")).toBeUndefined();
+	});
+
+	it("omits the secondary block by default", () => {
+		const r = analyzeMuscleBalance([], {}, "2024-01-01", { truncated: false });
+		expect(r.by_muscle_group_secondary).toBeUndefined();
+		expect(r.unmapped_exercise_template_ids).toEqual([]);
 	});
 });

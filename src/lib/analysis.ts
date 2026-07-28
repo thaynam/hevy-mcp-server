@@ -300,6 +300,8 @@ export interface ProgressionDelta {
 	best_estimated_1rm_kg: number | null;
 	top_set_weight_kg: number | null;
 	top_set_reps: number | null;
+	/** RPE change on the top set (current − previous); null if either lacks RPE. */
+	top_set_rpe: number | null;
 }
 
 export interface ExerciseProgression {
@@ -308,6 +310,11 @@ export interface ExerciseProgression {
 	current: ExerciseOccurrence;
 	previous: ExerciseOccurrence | null;
 	delta: ProgressionDelta | null;
+	/**
+	 * Present only when history_depth > 1: the last N occurrences, most recent
+	 * first, INCLUDING current (index 0 = current, 1 = previous, ...).
+	 */
+	occurrences?: ExerciseOccurrence[];
 }
 
 export interface ProgressionDeltasResult {
@@ -414,6 +421,10 @@ function computeProgressionDelta(
 			current.top_set?.reps ?? null,
 			previous.top_set?.reps ?? null,
 		),
+		top_set_rpe: subtractNullable(
+			current.top_set?.rpe ?? null,
+			previous.top_set?.rpe ?? null,
+		),
 	};
 }
 
@@ -425,12 +436,17 @@ function computeProgressionDelta(
  * @param priorWorkouts - Earlier workouts (any order); matched by template_id
  * @param options.scannedWorkouts - How many workouts the caller scanned
  * @param options.truncated - Whether the caller hit its scan cap
+ * @param options.historyDepth - How many prior occurrences to collect per
+ *   exercise (default 1). When > 1, each exercise gets an `occurrences` array
+ *   (current + priors, most recent first) so the caller can inspect several
+ *   sessions without walking back manually. Still no classification.
  */
 export function analyzeProgressionDeltas(
 	currentWorkout: any,
 	priorWorkouts: any[],
-	options: { scannedWorkouts: number; truncated: boolean },
+	options: { scannedWorkouts: number; truncated: boolean; historyDepth?: number },
 ): ProgressionDeltasResult {
+	const historyDepth = Math.max(1, Math.floor(options.historyDepth ?? 1));
 	const currentId =
 		typeof currentWorkout?.id === "string" ? currentWorkout.id : "";
 	const currentDate = workoutStart(currentWorkout).slice(0, 10);
@@ -453,23 +469,26 @@ export function analyzeProgressionDeltas(
 				: "";
 		const current = computeExerciseOccurrence(exercise, currentId, currentDate);
 
-		let previous: ExerciseOccurrence | null = null;
+		// Collect up to `historyDepth` prior occurrences of this template_id.
+		const priorOccurrences: ExerciseOccurrence[] = [];
 		for (const workout of priors) {
+			if (priorOccurrences.length >= historyDepth) break;
 			const exs: any[] = Array.isArray(workout?.exercises)
 				? workout.exercises
 				: [];
-			const match = exs.find(
-				(e) => e?.exercise_template_id === templateId,
-			);
+			const match = exs.find((e) => e?.exercise_template_id === templateId);
 			if (match) {
-				previous = computeExerciseOccurrence(
-					match,
-					typeof workout?.id === "string" ? workout.id : "",
-					workoutStart(workout).slice(0, 10),
+				priorOccurrences.push(
+					computeExerciseOccurrence(
+						match,
+						typeof workout?.id === "string" ? workout.id : "",
+						workoutStart(workout).slice(0, 10),
+					),
 				);
-				break;
 			}
 		}
+
+		const previous = priorOccurrences[0] ?? null;
 		if (previous === null) withoutPrevious++;
 
 		const entry: ExerciseProgression = {
@@ -478,6 +497,9 @@ export function analyzeProgressionDeltas(
 			previous,
 			delta: previous ? computeProgressionDelta(current, previous) : null,
 		};
+		if (historyDepth > 1) {
+			entry.occurrences = [current, ...priorOccurrences];
+		}
 		if (typeof exercise?.title === "string") {
 			entry.exercise_title = exercise.title;
 		}
@@ -876,27 +898,72 @@ export interface MuscleBalanceResult {
 	since: string;
 	workouts_counted: number;
 	by_muscle_group: MuscleGroupVolume[];
+	/** Count of exercise occurrences whose template isn't in the catalog. */
 	unmapped_exercises: number;
+	/** Distinct template_ids not found in the catalog (so the caller can re-cache). */
+	unmapped_exercise_template_ids: string[];
+	/**
+	 * Present only when secondaryByTemplate is provided: the same distribution
+	 * counted where the muscle is a SECONDARY mover. Never summed into the
+	 * primary block — the caller decides how (or whether) to credit it.
+	 */
+	by_muscle_group_secondary?: MuscleGroupVolume[];
 	truncated: boolean;
+}
+
+function addToMuscleGroup(
+	groups: Map<string, MuscleGroupVolume>,
+	muscleGroup: string,
+	sets: number,
+	volume: number,
+): void {
+	const group =
+		groups.get(muscleGroup) ??
+		({
+			muscle_group: muscleGroup,
+			effective_sets: 0,
+			total_volume_kg: 0,
+			exercise_count: 0,
+		} as MuscleGroupVolume);
+	group.exercise_count++;
+	group.effective_sets += sets;
+	group.total_volume_kg += volume;
+	groups.set(muscleGroup, group);
+}
+
+function sortedMuscleGroups(
+	groups: Map<string, MuscleGroupVolume>,
+): MuscleGroupVolume[] {
+	return [...groups.values()]
+		.map((g) => ({ ...g, total_volume_kg: roundTo2(g.total_volume_kg) }))
+		.sort((a, b) => b.effective_sets - a.effective_sets);
 }
 
 /**
  * Aggregates effective sets and volume per primary muscle group.
  *
  * @param muscleGroupByTemplate - template_id → primary_muscle_group (from the catalog)
+ * @param options.secondaryByTemplate - template_id → secondary muscle groups;
+ *   when provided, a separate secondary distribution is returned (raw numbers,
+ *   never merged into primary).
  */
 export function analyzeMuscleBalance(
 	workouts: any[],
 	muscleGroupByTemplate: Record<string, string>,
 	since: string,
-	options: { truncated: boolean },
+	options: {
+		truncated: boolean;
+		secondaryByTemplate?: Record<string, string[]>;
+	},
 ): MuscleBalanceResult {
 	const inWindow = workouts.filter(
 		(w) => workoutStart(w).slice(0, 10) >= since,
 	);
 
 	const groups = new Map<string, MuscleGroupVolume>();
+	const secondaryGroups = new Map<string, MuscleGroupVolume>();
 	let unmapped = 0;
+	const unmappedIds = new Set<string>();
 
 	for (const workout of inWindow) {
 		const exercises: any[] = Array.isArray(workout?.exercises)
@@ -907,42 +974,46 @@ export function analyzeMuscleBalance(
 				typeof exercise?.exercise_template_id === "string"
 					? exercise.exercise_template_id
 					: "";
+
+			// This exercise's effective sets + volume, computed once.
+			let exSets = 0;
+			let exVolume = 0;
+			const sets: any[] = Array.isArray(exercise?.sets) ? exercise.sets : [];
+			for (const set of sets.filter(isEffectiveSet)) {
+				exSets++;
+				const weight = numeric(set?.weight_kg);
+				const reps = numeric(set?.reps);
+				if (weight !== null && reps !== null) exVolume += weight * reps;
+			}
+
 			const muscleGroup = muscleGroupByTemplate[templateId];
 			if (!muscleGroup) {
 				unmapped++;
-				continue;
+				if (templateId) unmappedIds.add(templateId);
+			} else {
+				addToMuscleGroup(groups, muscleGroup, exSets, exVolume);
 			}
-			const group =
-				groups.get(muscleGroup) ??
-				({
-					muscle_group: muscleGroup,
-					effective_sets: 0,
-					total_volume_kg: 0,
-					exercise_count: 0,
-				} as MuscleGroupVolume);
-			group.exercise_count++;
-			const sets: any[] = Array.isArray(exercise?.sets) ? exercise.sets : [];
-			for (const set of sets.filter(isEffectiveSet)) {
-				group.effective_sets++;
-				const weight = numeric(set?.weight_kg);
-				const reps = numeric(set?.reps);
-				if (weight !== null && reps !== null) {
-					group.total_volume_kg += weight * reps;
+
+			if (options.secondaryByTemplate) {
+				for (const secondary of options.secondaryByTemplate[templateId] ?? []) {
+					addToMuscleGroup(secondaryGroups, secondary, exSets, exVolume);
 				}
 			}
-			groups.set(muscleGroup, group);
 		}
 	}
 
-	const byGroup = [...groups.values()]
-		.map((g) => ({ ...g, total_volume_kg: roundTo2(g.total_volume_kg) }))
-		.sort((a, b) => b.effective_sets - a.effective_sets);
+	const byGroup = sortedMuscleGroups(groups);
 
-	return {
+	const result: MuscleBalanceResult = {
 		since,
 		workouts_counted: inWindow.length,
 		by_muscle_group: byGroup,
 		unmapped_exercises: unmapped,
+		unmapped_exercise_template_ids: [...unmappedIds],
 		truncated: options.truncated,
 	};
+	if (options.secondaryByTemplate) {
+		result.by_muscle_group_secondary = sortedMuscleGroups(secondaryGroups);
+	}
+	return result;
 }
