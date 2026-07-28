@@ -132,6 +132,16 @@ export class HevyClient {
     return this.request<T>(path, { method: 'PUT', ...(body !== undefined ? { body } : {}), ...(queryParams !== undefined ? { queryParams } : {}) });
   }
 
+  /**
+   * Helper method for DELETE requests
+   */
+  private async delete<T>(
+    path: string,
+    queryParams?: Record<string, string | number | boolean | undefined>
+  ): Promise<T> {
+    return this.request<T>(path, { method: 'DELETE', ...(queryParams !== undefined ? { queryParams } : {}) });
+  }
+
   // ============================================
   // WORKOUTS
   // ============================================
@@ -271,5 +281,75 @@ export class HevyClient {
    */
   async createExerciseTemplate(exercise: any): Promise<any> {
     return this.post<any>('/v1/exercise_templates', exercise);
+  }
+
+  // ============================================
+  // USER
+  // ============================================
+
+  /**
+   * Get the authenticated user's info (id, name, public profile URL)
+   */
+  async getUserInfo(): Promise<any> {
+    return this.get<any>('/v1/user/info');
+  }
+
+  // ============================================
+  // BODY MEASUREMENTS
+  // ============================================
+
+  /**
+   * Get a paginated list of body measurements for the authenticated user
+   */
+  async getBodyMeasurements(options?: { page?: number; pageSize?: number }): Promise<any> {
+    return this.get<any>('/v1/body_measurements', options as Record<string, string | number | boolean | undefined>);
+  }
+
+  /**
+   * Get a single body measurement by date (YYYY-MM-DD)
+   */
+  async getBodyMeasurement(date: string): Promise<any> {
+    return this.get<any>(`/v1/body_measurements/${date}`);
+  }
+
+  /**
+   * Create a body measurement entry for a given date.
+   * The API returns 409 if an entry already exists for that date.
+   */
+  async createBodyMeasurement(measurement: any): Promise<any> {
+    return this.post<any>('/v1/body_measurements', measurement);
+  }
+
+  /**
+   * Update an existing body measurement entry for a given date (YYYY-MM-DD).
+   * All fields are overwritten; omitted fields are set to null.
+   */
+  async updateBodyMeasurement(date: string, measurement: any): Promise<any> {
+    return this.put<any>(`/v1/body_measurements/${date}`, measurement);
+  }
+
+  // ============================================
+  // WEBHOOK SUBSCRIPTION
+  // ============================================
+
+  /**
+   * Get the current webhook subscription (url + auth_token), if any
+   */
+  async getWebhookSubscription(): Promise<any> {
+    return this.get<any>('/v1/webhook-subscription');
+  }
+
+  /**
+   * Create a webhook subscription that notifies your URL when a workout is created
+   */
+  async createWebhookSubscription(subscription: any): Promise<any> {
+    return this.post<any>('/v1/webhook-subscription', subscription);
+  }
+
+  /**
+   * Delete the current webhook subscription
+   */
+  async deleteWebhookSubscription(): Promise<any> {
+    return this.delete<any>('/v1/webhook-subscription');
   }
 }

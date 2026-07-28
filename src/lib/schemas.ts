@@ -230,6 +230,72 @@ export const CreateRoutineFolderSchema = z.object({
 export type CreateRoutineFolder = z.infer<typeof CreateRoutineFolderSchema>;
 
 // ============================================
+// BODY MEASUREMENT SCHEMAS (snake_case for MCP interface)
+// ============================================
+
+/**
+ * Metric fields shared by body measurement create/update.
+ * Every metric is an optional nullable number (matches the Hevy API,
+ * where all measurements except the date are nullable).
+ */
+const BodyMeasurementMetricsShape = {
+	weight_kg: z.number().optional().nullable().describe("Body weight in kilograms"),
+	lean_mass_kg: z.number().optional().nullable().describe("Lean mass in kilograms"),
+	fat_percent: z.number().optional().nullable().describe("Body fat percentage"),
+	neck_cm: z.number().optional().nullable().describe("Neck circumference in centimeters"),
+	shoulder_cm: z.number().optional().nullable().describe("Shoulder circumference in centimeters"),
+	chest_cm: z.number().optional().nullable().describe("Chest circumference in centimeters"),
+	left_bicep_cm: z.number().optional().nullable().describe("Left bicep circumference in centimeters"),
+	right_bicep_cm: z.number().optional().nullable().describe("Right bicep circumference in centimeters"),
+	left_forearm_cm: z.number().optional().nullable().describe("Left forearm circumference in centimeters"),
+	right_forearm_cm: z.number().optional().nullable().describe("Right forearm circumference in centimeters"),
+	abdomen: z.number().optional().nullable().describe("Abdomen circumference in centimeters"),
+	waist: z.number().optional().nullable().describe("Waist circumference in centimeters"),
+	hips: z.number().optional().nullable().describe("Hips circumference in centimeters"),
+	left_thigh: z.number().optional().nullable().describe("Left thigh circumference in centimeters"),
+	right_thigh: z.number().optional().nullable().describe("Right thigh circumference in centimeters"),
+	left_calf: z.number().optional().nullable().describe("Left calf circumference in centimeters"),
+	right_calf: z.number().optional().nullable().describe("Right calf circumference in centimeters"),
+} as const;
+
+/**
+ * Schema for creating a body measurement (POST /v1/body_measurements)
+ * The date is required; all other measurements are optional.
+ */
+export const CreateBodyMeasurementSchema = z.object({
+	date: z.string().describe("Date of the measurement (YYYY-MM-DD, e.g., 2024-08-14)"),
+	...BodyMeasurementMetricsShape,
+});
+export type CreateBodyMeasurement = z.infer<typeof CreateBodyMeasurementSchema>;
+
+/**
+ * Schema for updating a body measurement (PUT /v1/body_measurements/{date})
+ * The date comes from the path, so it is not part of the body.
+ * NOTE: the API overwrites all fields; omitted fields are set to null.
+ */
+export const UpdateBodyMeasurementSchema = z.object({
+	...BodyMeasurementMetricsShape,
+});
+export type UpdateBodyMeasurement = z.infer<typeof UpdateBodyMeasurementSchema>;
+
+// ============================================
+// WEBHOOK SUBSCRIPTION SCHEMAS (snake_case for MCP interface)
+// ============================================
+
+/**
+ * Schema for creating a webhook subscription (POST /v1/webhook-subscription)
+ * Hevy sends a POST to `url` when a workout is created.
+ */
+export const CreateWebhookSubscriptionSchema = z.object({
+	url: z.string().describe("The webhook URL that will receive workout-created events"),
+	auth_token: z
+		.string()
+		.optional()
+		.describe("Optional token sent as the Authorization header when Hevy calls your webhook URL"),
+});
+export type CreateWebhookSubscription = z.infer<typeof CreateWebhookSubscriptionSchema>;
+
+// ============================================
 // API REQUEST BODY SCHEMAS (for wrapping in API-specific format)
 // ============================================
 
@@ -558,4 +624,49 @@ export function transformRoutineFolderToAPI(folder: CreateRoutineFolder) {
 			title: folder.title,
 		},
 	};
+}
+
+/**
+ * Transform body measurement data to API format.
+ *
+ * Unlike workouts/routines, the Hevy body-measurement endpoints take a FLAT body
+ * (no wrapping object) whose field names already match the MCP interface. We only
+ * drop unspecified (undefined) fields, preserving explicit nulls (which are
+ * meaningful for measurements).
+ *
+ * @param measurement - Body measurement data in snake_case format
+ * @returns Body measurement data formatted for the Hevy API
+ *
+ * @example
+ * ```typescript
+ * transformBodyMeasurementToAPI({ date: "2024-08-14", weight_kg: 80.5, waist: 80 });
+ * // => { date: "2024-08-14", weight_kg: 80.5, waist: 80 }
+ * ```
+ */
+export function transformBodyMeasurementToAPI(
+	measurement: CreateBodyMeasurement | UpdateBodyMeasurement,
+) {
+	return removeUndefined({ ...measurement });
+}
+
+/**
+ * Transform webhook subscription data to API format.
+ *
+ * Maps the snake_case MCP field `auth_token` to the API's `authToken` field and
+ * drops it when not provided.
+ *
+ * @param subscription - Webhook subscription data in snake_case format
+ * @returns Webhook subscription data formatted for the Hevy API
+ *
+ * @example
+ * ```typescript
+ * transformWebhookSubscriptionToAPI({ url: "https://example.com/hevy", auth_token: "Bearer x" });
+ * // => { url: "https://example.com/hevy", authToken: "Bearer x" }
+ * ```
+ */
+export function transformWebhookSubscriptionToAPI(subscription: CreateWebhookSubscription) {
+	return removeUndefined({
+		url: subscription.url,
+		authToken: subscription.auth_token,
+	});
 }

@@ -9,18 +9,26 @@ import {
   UpdateRoutineSchema,
   CreateExerciseTemplateSchema,
   CreateRoutineFolderSchema,
+  CreateBodyMeasurementSchema,
+  UpdateBodyMeasurementSchema,
+  CreateWebhookSubscriptionSchema,
   transformWorkoutToAPI,
   transformRoutineToAPI,
   transformExerciseTemplateToAPI,
   transformRoutineFolderToAPI,
+  transformBodyMeasurementToAPI,
+  transformWebhookSubscriptionToAPI,
 } from "./lib/schemas.js";
 import {
   ValidationError,
   validatePagination,
   validateISO8601Date,
+  validateDate,
   validateWorkoutData,
   validateRoutineData,
   validateExerciseTemplate,
+  validateBodyMeasurement,
+  validateWebhookSubscription,
   PAGINATION_LIMITS,
 } from "./lib/transforms.js";
 import { handleError } from "./lib/errors.js";
@@ -753,5 +761,261 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
         }
       },
     );
+
+    // ============================================
+    // USER
+    // ============================================
+
+    this.server.tool("get_user_info", {}, async () => {
+      try {
+        const result = await this.client.getUserInfo();
+        // The API wraps the payload in a `data` object
+        const user = result?.data ?? result;
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `User: ${user?.name || "Unknown"}\nID: ${user?.id || "N/A"}\nProfile: ${user?.url || "N/A"}`,
+            },
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return handleError(error);
+      }
+    });
+
+    // ============================================
+    // BODY MEASUREMENTS
+    // ============================================
+
+    this.server.tool(
+      "get_body_measurements",
+      {
+        page: z
+          .number()
+          .optional()
+          .describe("Page number (Must be 1 or greater)")
+          .default(1),
+        page_size: z
+          .number()
+          .optional()
+          .describe("Number of items per page (Max 10)")
+          .default(10),
+      },
+      async ({ page, page_size }) => {
+        try {
+          validatePagination(
+            page,
+            page_size,
+            PAGINATION_LIMITS.BODY_MEASUREMENTS,
+          );
+
+          const measurements = await this.client.getBodyMeasurements({
+            page,
+            pageSize: page_size,
+          });
+
+          const measurementDetails =
+            measurements.body_measurements
+              ?.map((m: any, index: number) => {
+                return `${index + 1}. ${m.date}\n   Weight: ${m.weight_kg ?? "N/A"}kg, Fat: ${m.fat_percent ?? "N/A"}%, Waist: ${m.waist ?? "N/A"}cm`;
+              })
+              .join("\n") || "No body measurements found";
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Retrieved ${measurements.body_measurements?.length || 0} body measurements (page ${measurements.page} of ${measurements.page_count})`,
+              },
+              {
+                type: "text",
+                text: measurementDetails,
+              },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(measurements.body_measurements, null, 2)}`,
+              },
+            ],
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "get_body_measurement",
+      {
+        date: z
+          .string()
+          .describe("The date of the body measurement (YYYY-MM-DD, e.g., 2024-08-14)"),
+      },
+      async ({ date }) => {
+        try {
+          validateDate(date, "date");
+
+          const measurement = await this.client.getBodyMeasurement(date);
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Body measurement for ${measurement.date || date}\nWeight: ${measurement.weight_kg ?? "N/A"}kg\nBody fat: ${measurement.fat_percent ?? "N/A"}%\nWaist: ${measurement.waist ?? "N/A"}cm`,
+              },
+              {
+                type: "text",
+                text: JSON.stringify(measurement, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "create_body_measurement",
+      CreateBodyMeasurementSchema.shape,
+      async (args) => {
+        try {
+          validateBodyMeasurement(args, { requireDate: true });
+
+          const result = await this.client.createBodyMeasurement(
+            transformBodyMeasurementToAPI(args),
+          );
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `✓ Successfully created body measurement for ${args.date}`,
+              },
+              {
+                type: "text",
+                text: JSON.stringify(result, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "update_body_measurement",
+      {
+        date: z
+          .string()
+          .describe("The date of the measurement to update (YYYY-MM-DD, e.g., 2024-08-14)"),
+        ...UpdateBodyMeasurementSchema.shape,
+      },
+      async (args) => {
+        try {
+          const { date, ...measurementData } = args;
+
+          validateDate(date, "date");
+          validateBodyMeasurement(measurementData);
+
+          const result = await this.client.updateBodyMeasurement(
+            date,
+            transformBodyMeasurementToAPI(measurementData),
+          );
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `✓ Successfully updated body measurement for ${date}`,
+              },
+              {
+                type: "text",
+                text: JSON.stringify(result, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    // ============================================
+    // WEBHOOK SUBSCRIPTION
+    // ============================================
+
+    this.server.tool("get_webhook_subscription", {}, async () => {
+      try {
+        const subscription = await this.client.getWebhookSubscription();
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Webhook URL: ${subscription?.url || "None"}`,
+            },
+            {
+              type: "text",
+              text: JSON.stringify(subscription, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return handleError(error);
+      }
+    });
+
+    this.server.tool(
+      "create_webhook_subscription",
+      CreateWebhookSubscriptionSchema.shape,
+      async (args) => {
+        try {
+          validateWebhookSubscription(args);
+
+          const result = await this.client.createWebhookSubscription(
+            transformWebhookSubscriptionToAPI(args),
+          );
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `✓ Successfully created webhook subscription for ${args.url}`,
+              },
+              {
+                type: "text",
+                text: JSON.stringify(result, null, 2),
+              },
+            ],
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool("delete_webhook_subscription", {}, async () => {
+      try {
+        await this.client.deleteWebhookSubscription();
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: "✓ Successfully deleted webhook subscription",
+            },
+          ],
+        };
+      } catch (error) {
+        return handleError(error);
+      }
+    });
   }
 }

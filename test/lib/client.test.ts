@@ -1042,6 +1042,281 @@ describe('HevyClient - API Contract Compliance', () => {
   });
 
   // ============================================
+  // USER - GET /v1/user/info
+  // ============================================
+  describe('GET /v1/user/info - getUserInfo()', () => {
+    it('should send GET request to correct endpoint', async () => {
+      mockFetchSuccess({ data: { id: 'u1', name: 'John', url: 'https://hevy.com/user/john' } });
+
+      await client.getUserInfo();
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://api.hevyapp.com/v1/user/info',
+        expect.objectContaining({ method: 'GET' })
+      );
+    });
+
+    it('should include api-key header (required per spec)', async () => {
+      mockFetchSuccess({ data: {} });
+
+      await client.getUserInfo();
+
+      const callArgs = (global.fetch as any).mock.calls[0];
+      const headers = callArgs[1].headers as Headers;
+      expect(headers.get('api-key')).toBe(TEST_API_KEY);
+    });
+
+    it('should return UserInfoResponse schema (data wrapper)', async () => {
+      const mockData = { data: { id: 'u1', name: 'John', url: 'https://hevy.com/user/john' } };
+      mockFetchSuccess(mockData);
+
+      const result = await client.getUserInfo();
+
+      expect(result).toHaveProperty('data');
+      expect(result.data).toHaveProperty('id');
+      expect(result.data).toHaveProperty('name');
+      expect(result.data).toHaveProperty('url');
+    });
+
+    it('should handle 404 when user not found', async () => {
+      mockFetchError(404, 'Not Found');
+
+      try {
+        await client.getUserInfo();
+        expect.fail('Should have thrown an error');
+      } catch (error) {
+        expect(error).toBeInstanceOf(HevyApiError);
+        expect((error as HevyApiError).status).toBe(404);
+      }
+    });
+  });
+
+  // ============================================
+  // BODY MEASUREMENTS - GET /v1/body_measurements
+  // ============================================
+  describe('GET /v1/body_measurements - getBodyMeasurements()', () => {
+    it('should send GET request to correct endpoint', async () => {
+      mockFetchSuccess({ page: 1, page_count: 1, body_measurements: [] });
+
+      await client.getBodyMeasurements();
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://api.hevyapp.com/v1/body_measurements',
+        expect.objectContaining({ method: 'GET' })
+      );
+    });
+
+    it('should accept pagination parameters (max pageSize 10)', async () => {
+      mockFetchSuccess({ page: 2, page_count: 5, body_measurements: [] });
+
+      await client.getBodyMeasurements({ page: 2, pageSize: 10 });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://api.hevyapp.com/v1/body_measurements?page=2&pageSize=10',
+        expect.any(Object)
+      );
+    });
+
+    it('should return paginated body_measurements response', async () => {
+      const mockData = {
+        page: 1,
+        page_count: 3,
+        body_measurements: [
+          { date: '2024-08-14', weight_kg: 80.5, waist: 80 }
+        ]
+      };
+      mockFetchSuccess(mockData);
+
+      const result = await client.getBodyMeasurements();
+
+      expect(result).toHaveProperty('page');
+      expect(result).toHaveProperty('page_count');
+      expect(result).toHaveProperty('body_measurements');
+      expect(Array.isArray(result.body_measurements)).toBe(true);
+    });
+  });
+
+  // ============================================
+  // BODY MEASUREMENTS - POST /v1/body_measurements
+  // ============================================
+  describe('POST /v1/body_measurements - createBodyMeasurement()', () => {
+    it('should send POST request with a flat (unwrapped) body', async () => {
+      const body = { date: '2024-08-14', weight_kg: 80.5, waist: 80 };
+      mockFetchSuccess({}, 200);
+
+      await client.createBodyMeasurement(body);
+
+      const callArgs = (global.fetch as any).mock.calls[0];
+      expect(callArgs[0]).toBe('https://api.hevyapp.com/v1/body_measurements');
+      expect(callArgs[1].method).toBe('POST');
+      const sentBody = JSON.parse(callArgs[1].body);
+      // Flat body - no wrapping object
+      expect(sentBody).toHaveProperty('date', '2024-08-14');
+      expect(sentBody).toHaveProperty('weight_kg', 80.5);
+    });
+
+    it('should handle 409 when a measurement for the date already exists', async () => {
+      mockFetchError(409, 'Conflict', { error: 'A measurement for this date already exists' });
+
+      try {
+        await client.createBodyMeasurement({ date: '2024-08-14' });
+        expect.fail('Should have thrown an error');
+      } catch (error) {
+        expect(error).toBeInstanceOf(HevyApiError);
+        expect((error as HevyApiError).status).toBe(409);
+        expect((error as HevyApiError).data).toHaveProperty('error');
+      }
+    });
+  });
+
+  // ============================================
+  // BODY MEASUREMENTS - GET /v1/body_measurements/{date}
+  // ============================================
+  describe('GET /v1/body_measurements/{date} - getBodyMeasurement()', () => {
+    it('should send GET request with the date in the path', async () => {
+      mockFetchSuccess({ date: '2024-08-14', weight_kg: 80.5 });
+
+      await client.getBodyMeasurement('2024-08-14');
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://api.hevyapp.com/v1/body_measurements/2024-08-14',
+        expect.objectContaining({ method: 'GET' })
+      );
+    });
+
+    it('should handle 404 when no measurement exists for the date', async () => {
+      mockFetchError(404, 'Not Found', { error: 'Body measurement not found' });
+
+      try {
+        await client.getBodyMeasurement('2024-08-14');
+        expect.fail('Should have thrown an error');
+      } catch (error) {
+        expect(error).toBeInstanceOf(HevyApiError);
+        expect((error as HevyApiError).status).toBe(404);
+      }
+    });
+  });
+
+  // ============================================
+  // BODY MEASUREMENTS - PUT /v1/body_measurements/{date}
+  // ============================================
+  describe('PUT /v1/body_measurements/{date} - updateBodyMeasurement()', () => {
+    it('should send PUT request with the date in the path and a flat body', async () => {
+      mockFetchSuccess({}, 200);
+
+      await client.updateBodyMeasurement('2024-08-14', { weight_kg: 81 });
+
+      const callArgs = (global.fetch as any).mock.calls[0];
+      expect(callArgs[0]).toBe('https://api.hevyapp.com/v1/body_measurements/2024-08-14');
+      expect(callArgs[1].method).toBe('PUT');
+      const sentBody = JSON.parse(callArgs[1].body);
+      expect(sentBody).toHaveProperty('weight_kg', 81);
+      // date is in the path, not the body
+      expect(sentBody).not.toHaveProperty('date');
+    });
+
+    it('should handle 404 when no measurement exists for the date', async () => {
+      mockFetchError(404, 'Not Found', { error: 'No measurement found for the given date' });
+
+      try {
+        await client.updateBodyMeasurement('2024-08-14', { weight_kg: 81 });
+        expect.fail('Should have thrown an error');
+      } catch (error) {
+        expect(error).toBeInstanceOf(HevyApiError);
+        expect((error as HevyApiError).status).toBe(404);
+      }
+    });
+  });
+
+  // ============================================
+  // WEBHOOK SUBSCRIPTION - /v1/webhook-subscription
+  // ============================================
+  describe('GET /v1/webhook-subscription - getWebhookSubscription()', () => {
+    it('should send GET request to correct endpoint', async () => {
+      mockFetchSuccess({ url: 'https://example.com/hevy-webhook', auth_token: 'Bearer mytoken' });
+
+      await client.getWebhookSubscription();
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://api.hevyapp.com/v1/webhook-subscription',
+        expect.objectContaining({ method: 'GET' })
+      );
+    });
+
+    it('should return url and auth_token', async () => {
+      mockFetchSuccess({ url: 'https://example.com/hevy-webhook', auth_token: 'Bearer mytoken' });
+
+      const result = await client.getWebhookSubscription();
+
+      expect(result).toHaveProperty('url');
+      expect(result).toHaveProperty('auth_token');
+    });
+
+    it('should handle 404 when no webhook subscription found', async () => {
+      mockFetchError(404, 'Not Found');
+
+      try {
+        await client.getWebhookSubscription();
+        expect.fail('Should have thrown an error');
+      } catch (error) {
+        expect(error).toBeInstanceOf(HevyApiError);
+        expect((error as HevyApiError).status).toBe(404);
+      }
+    });
+  });
+
+  describe('POST /v1/webhook-subscription - createWebhookSubscription()', () => {
+    it('should send POST request with the subscription body', async () => {
+      const body = { url: 'https://example.com/hevy-webhook', authToken: 'Bearer mytoken' };
+      mockFetchSuccess({}, 201);
+
+      await client.createWebhookSubscription(body);
+
+      const callArgs = (global.fetch as any).mock.calls[0];
+      expect(callArgs[0]).toBe('https://api.hevyapp.com/v1/webhook-subscription');
+      expect(callArgs[1].method).toBe('POST');
+      const sentBody = JSON.parse(callArgs[1].body);
+      expect(sentBody).toHaveProperty('url', 'https://example.com/hevy-webhook');
+      expect(sentBody).toHaveProperty('authToken', 'Bearer mytoken');
+    });
+
+    it('should handle 400 for invalid request body', async () => {
+      mockFetchError(400, 'Bad Request', { error: 'Invalid request body' });
+
+      try {
+        await client.createWebhookSubscription({ url: '' });
+        expect.fail('Should have thrown an error');
+      } catch (error) {
+        expect(error).toBeInstanceOf(HevyApiError);
+        expect((error as HevyApiError).status).toBe(400);
+      }
+    });
+  });
+
+  describe('DELETE /v1/webhook-subscription - deleteWebhookSubscription()', () => {
+    it('should send DELETE request to correct endpoint', async () => {
+      mockFetchSuccess({}, 200);
+
+      await client.deleteWebhookSubscription();
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://api.hevyapp.com/v1/webhook-subscription',
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+
+    it('should include api-key header', async () => {
+      mockFetchSuccess({}, 200);
+
+      await client.deleteWebhookSubscription();
+
+      const callArgs = (global.fetch as any).mock.calls[0];
+      const headers = callArgs[1].headers as Headers;
+      expect(headers.get('api-key')).toBe(TEST_API_KEY);
+    });
+  });
+
+  // ============================================
   // SCHEMA VALIDATION - Enhanced Deep Validation
   // ============================================
   describe('Schema Validation', () => {

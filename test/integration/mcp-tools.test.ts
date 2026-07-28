@@ -10,9 +10,12 @@ import { handleError } from "../../src/lib/errors.js";
 import {
 	validatePagination,
 	validateISO8601Date,
+	validateDate,
 	validateWorkoutData,
 	validateRoutineData,
 	validateExerciseTemplate,
+	validateBodyMeasurement,
+	validateWebhookSubscription,
 	PAGINATION_LIMITS,
 } from "../../src/lib/transforms.js";
 import {
@@ -20,6 +23,8 @@ import {
 	transformRoutineToAPI,
 	transformExerciseTemplateToAPI,
 	transformRoutineFolderToAPI,
+	transformBodyMeasurementToAPI,
+	transformWebhookSubscriptionToAPI,
 } from "../../src/lib/schemas.js";
 
 /**
@@ -754,6 +759,306 @@ describe("MCP Tools Integration Tests", () => {
 			const folder = await client.createRoutineFolder(apiPayload);
 
 			expect(folder.id).toBe("new-folder-id");
+		});
+	});
+
+	// ============================================
+	// USER TOOLS
+	// ============================================
+
+	describe("get_user_info", () => {
+		it("should successfully retrieve user info", async () => {
+			mockFetchSuccess({
+				data: { id: "u1", name: "John", url: "https://hevy.com/user/john" },
+			});
+
+			const result = await client.getUserInfo();
+
+			expect(result.data.id).toBe("u1");
+			expect(result.data.name).toBe("John");
+		});
+
+		it("should handle 404 errors", async () => {
+			mockFetchError(404, "Not Found");
+
+			try {
+				await client.getUserInfo();
+				expect.fail("Should have thrown");
+			} catch (error) {
+				const result = handleError(error);
+				expect(result.content[0].text).toContain("❌ Resource not found");
+				expect(result.isError).toBe(true);
+			}
+		});
+	});
+
+	// ============================================
+	// BODY MEASUREMENT TOOLS
+	// ============================================
+
+	describe("get_body_measurements", () => {
+		it("should successfully retrieve body measurements with pagination", async () => {
+			const mockMeasurements = {
+				page: 1,
+				page_count: 1,
+				body_measurements: [{ date: "2024-08-14", weight_kg: 80.5, waist: 80 }],
+			};
+			mockFetchSuccess(mockMeasurements);
+
+			validatePagination(1, 10, PAGINATION_LIMITS.BODY_MEASUREMENTS);
+			const measurements = await client.getBodyMeasurements({ page: 1, pageSize: 10 });
+
+			expect(measurements.body_measurements).toHaveLength(1);
+			expect(measurements.body_measurements[0].weight_kg).toBe(80.5);
+		});
+
+		it("should throw error for page size exceeding 10", async () => {
+			try {
+				validatePagination(1, 11, PAGINATION_LIMITS.BODY_MEASUREMENTS);
+				expect.fail("Should have thrown");
+			} catch (error) {
+				const result = handleError(error);
+				expect(result.content[0].text).toContain("Page size cannot exceed 10");
+				expect(result.isError).toBe(true);
+			}
+		});
+
+		it("should handle empty measurements list", async () => {
+			mockFetchSuccess({ page: 1, page_count: 1, body_measurements: [] });
+
+			const measurements = await client.getBodyMeasurements({});
+
+			expect(measurements.body_measurements).toEqual([]);
+		});
+	});
+
+	describe("get_body_measurement", () => {
+		it("should successfully retrieve a single measurement by date", async () => {
+			mockFetchSuccess({ date: "2024-08-14", weight_kg: 80.5 });
+
+			validateDate("2024-08-14", "date");
+			const measurement = await client.getBodyMeasurement("2024-08-14");
+
+			expect(measurement.date).toBe("2024-08-14");
+		});
+
+		it("should validate the date format", async () => {
+			try {
+				validateDate("14/08/2024", "date");
+				expect.fail("Should have thrown");
+			} catch (error) {
+				const result = handleError(error);
+				expect(result.content[0].text).toContain("YYYY-MM-DD format");
+				expect(result.isError).toBe(true);
+			}
+		});
+
+		it("should handle 404 errors", async () => {
+			mockFetchError(404, "Not Found");
+
+			try {
+				await client.getBodyMeasurement("2024-08-14");
+				expect.fail("Should have thrown");
+			} catch (error) {
+				const result = handleError(error);
+				expect(result.content[0].text).toContain("❌ Resource not found");
+				expect(result.isError).toBe(true);
+			}
+		});
+	});
+
+	describe("create_body_measurement", () => {
+		it("should successfully create a measurement with full end-to-end flow", async () => {
+			mockFetchSuccess({}, 200);
+
+			const measurementData = {
+				date: "2024-08-14",
+				weight_kg: 80.5,
+				waist: 80,
+			};
+
+			// Step 1: Validate
+			validateBodyMeasurement(measurementData, { requireDate: true });
+			// Step 2: Transform
+			const apiPayload = transformBodyMeasurementToAPI(measurementData);
+			// Step 3: API call
+			await client.createBodyMeasurement(apiPayload);
+
+			const callArgs = (global.fetch as any).mock.calls[0];
+			const body = JSON.parse(callArgs[1].body);
+			expect(body.date).toBe("2024-08-14");
+			expect(body.weight_kg).toBe(80.5);
+		});
+
+		it("should throw error when date is missing", async () => {
+			try {
+				validateBodyMeasurement({ weight_kg: 80.5 }, { requireDate: true });
+				expect.fail("Should have thrown");
+			} catch (error) {
+				const result = handleError(error);
+				expect(result.content[0].text).toContain("date is required");
+				expect(result.isError).toBe(true);
+			}
+		});
+
+		it("should throw error for negative metric values", async () => {
+			try {
+				validateBodyMeasurement(
+					{ date: "2024-08-14", weight_kg: -5 },
+					{ requireDate: true },
+				);
+				expect.fail("Should have thrown");
+			} catch (error) {
+				const result = handleError(error);
+				expect(result.content[0].text).toContain("cannot be negative");
+				expect(result.isError).toBe(true);
+			}
+		});
+
+		it("should handle 409 when a measurement already exists for the date", async () => {
+			mockFetchError(409, "Conflict", {
+				error: "A measurement for this date already exists",
+			});
+
+			try {
+				await client.createBodyMeasurement({ date: "2024-08-14" });
+				expect.fail("Should have thrown");
+			} catch (error) {
+				expect((error as any).status).toBe(409);
+			}
+		});
+	});
+
+	describe("update_body_measurement", () => {
+		it("should successfully update a measurement (date in path, flat body)", async () => {
+			mockFetchSuccess({}, 200);
+
+			const measurementData = { weight_kg: 81, waist: 79 };
+
+			validateDate("2024-08-14", "date");
+			validateBodyMeasurement(measurementData);
+			const apiPayload = transformBodyMeasurementToAPI(measurementData);
+			await client.updateBodyMeasurement("2024-08-14", apiPayload);
+
+			const callArgs = (global.fetch as any).mock.calls[0];
+			expect(callArgs[0]).toBe(
+				"https://api.hevyapp.com/v1/body_measurements/2024-08-14",
+			);
+			const body = JSON.parse(callArgs[1].body);
+			expect(body.weight_kg).toBe(81);
+			expect(body).not.toHaveProperty("date");
+		});
+
+		it("should handle 404 errors", async () => {
+			mockFetchError(404, "Not Found");
+
+			try {
+				await client.updateBodyMeasurement("2024-08-14", { weight_kg: 81 });
+				expect.fail("Should have thrown");
+			} catch (error) {
+				const result = handleError(error);
+				expect(result.content[0].text).toContain("❌ Resource not found");
+				expect(result.isError).toBe(true);
+			}
+		});
+	});
+
+	// ============================================
+	// WEBHOOK SUBSCRIPTION TOOLS
+	// ============================================
+
+	describe("get_webhook_subscription", () => {
+		it("should successfully retrieve the current subscription", async () => {
+			mockFetchSuccess({
+				url: "https://example.com/hevy-webhook",
+				auth_token: "Bearer mytoken",
+			});
+
+			const subscription = await client.getWebhookSubscription();
+
+			expect(subscription.url).toBe("https://example.com/hevy-webhook");
+		});
+
+		it("should handle 404 when no subscription exists", async () => {
+			mockFetchError(404, "Not Found");
+
+			try {
+				await client.getWebhookSubscription();
+				expect.fail("Should have thrown");
+			} catch (error) {
+				const result = handleError(error);
+				expect(result.content[0].text).toContain("❌ Resource not found");
+				expect(result.isError).toBe(true);
+			}
+		});
+	});
+
+	describe("create_webhook_subscription", () => {
+		it("should successfully create a subscription with full end-to-end flow", async () => {
+			mockFetchSuccess({}, 201);
+
+			const subscriptionData = {
+				url: "https://example.com/hevy-webhook",
+				auth_token: "Bearer mytoken",
+			};
+
+			// Step 1: Validate
+			validateWebhookSubscription(subscriptionData);
+			// Step 2: Transform (auth_token -> authToken)
+			const apiPayload = transformWebhookSubscriptionToAPI(subscriptionData);
+			// Step 3: API call
+			await client.createWebhookSubscription(apiPayload);
+
+			const callArgs = (global.fetch as any).mock.calls[0];
+			const body = JSON.parse(callArgs[1].body);
+			expect(body.url).toBe("https://example.com/hevy-webhook");
+			expect(body.authToken).toBe("Bearer mytoken");
+			expect(body).not.toHaveProperty("auth_token");
+		});
+
+		it("should throw error for empty url", async () => {
+			try {
+				validateWebhookSubscription({ url: "" });
+				expect.fail("Should have thrown");
+			} catch (error) {
+				const result = handleError(error);
+				expect(result.content[0].text).toContain("url is required");
+				expect(result.isError).toBe(true);
+			}
+		});
+
+		it("should throw error for a non-http(s) url", async () => {
+			try {
+				validateWebhookSubscription({ url: "ftp://example.com" });
+				expect.fail("Should have thrown");
+			} catch (error) {
+				const result = handleError(error);
+				expect(result.content[0].text).toContain("http(s) URL");
+				expect(result.isError).toBe(true);
+			}
+		});
+	});
+
+	describe("delete_webhook_subscription", () => {
+		it("should successfully delete the subscription", async () => {
+			mockFetchSuccess({}, 200);
+
+			await client.deleteWebhookSubscription();
+
+			const callArgs = (global.fetch as any).mock.calls[0];
+			expect(callArgs[1].method).toBe("DELETE");
+		});
+
+		it("should handle errors", async () => {
+			mockFetchError(500, "Internal Server Error");
+
+			try {
+				await client.deleteWebhookSubscription();
+				expect.fail("Should have thrown");
+			} catch (error) {
+				const result = handleError(error);
+				expect(result.isError).toBe(true);
+			}
 		});
 	});
 

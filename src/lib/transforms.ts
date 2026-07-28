@@ -375,6 +375,111 @@ export function validateExerciseTemplate(template: any): void {
 }
 
 /**
+ * Validates a calendar date string in YYYY-MM-DD format
+ * (used by the body-measurement endpoints, which key entries by date)
+ * @param dateString - The date string to validate
+ * @param fieldName - Name of the field (for error messages)
+ * @throws ValidationError if the date format is invalid
+ */
+export function validateDate(dateString: string, fieldName: string): void {
+	const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+
+	if (!datePattern.test(dateString)) {
+		throw new ValidationError(
+			`${fieldName} must be in YYYY-MM-DD format (e.g., 2024-08-14), got ${dateString}`
+		);
+	}
+
+	// Validate that the date is actually valid (rejects e.g. 2024-13-40)
+	const date = new Date(`${dateString}T00:00:00Z`);
+	if (
+		Number.isNaN(date.getTime()) ||
+		date.toISOString().slice(0, 10) !== dateString
+	) {
+		throw new ValidationError(`${fieldName} is not a valid date: ${dateString}`);
+	}
+}
+
+/**
+ * Numeric metric fields on a body measurement (all optional/nullable in the API)
+ */
+const BODY_MEASUREMENT_METRIC_FIELDS = [
+	"weight_kg",
+	"lean_mass_kg",
+	"fat_percent",
+	"neck_cm",
+	"shoulder_cm",
+	"chest_cm",
+	"left_bicep_cm",
+	"right_bicep_cm",
+	"left_forearm_cm",
+	"right_forearm_cm",
+	"abdomen",
+	"waist",
+	"hips",
+	"left_thigh",
+	"right_thigh",
+	"left_calf",
+	"right_calf",
+] as const;
+
+/**
+ * Validates body measurement data before transformation
+ * @param measurement - Body measurement data to validate
+ * @param options.requireDate - Whether a `date` field is required (true for create)
+ * @throws ValidationError if validation fails
+ */
+export function validateBodyMeasurement(
+	measurement: any,
+	options: { requireDate?: boolean } = {}
+): void {
+	if (options.requireDate) {
+		if (!measurement.date) {
+			throw new ValidationError("Body measurement date is required");
+		}
+		validateDate(measurement.date, "date");
+	}
+
+	// Metrics must be non-negative numbers when provided
+	for (const field of BODY_MEASUREMENT_METRIC_FIELDS) {
+		const value = measurement[field];
+		if (value !== null && value !== undefined) {
+			if (typeof value !== "number" || Number.isNaN(value)) {
+				throw new ValidationError(`${field} must be a number`);
+			}
+			if (value < 0) {
+				throw new ValidationError(`${field} cannot be negative`);
+			}
+		}
+	}
+}
+
+/**
+ * Validates webhook subscription data before transformation
+ * @param subscription - Webhook subscription data to validate
+ * @throws ValidationError if validation fails
+ */
+export function validateWebhookSubscription(subscription: any): void {
+	if (!subscription.url || subscription.url.trim() === "") {
+		throw new ValidationError("Webhook url is required and cannot be empty");
+	}
+
+	try {
+		const parsed = new URL(subscription.url);
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+			throw new ValidationError(
+				`Webhook url must be an http(s) URL, got ${subscription.url}`
+			);
+		}
+	} catch (error) {
+		if (error instanceof ValidationError) throw error;
+		throw new ValidationError(
+			`Webhook url must be a valid URL, got ${subscription.url}`
+		);
+	}
+}
+
+/**
  * Pagination limits for different endpoints
  */
 export const PAGINATION_LIMITS = {
@@ -383,6 +488,7 @@ export const PAGINATION_LIMITS = {
 	ROUTINE_FOLDERS: 10,
 	WORKOUT_EVENTS: 10,
 	EXERCISE_TEMPLATES: 100,
+	BODY_MEASUREMENTS: 10,
 } as const;
 
 /**

@@ -4,6 +4,8 @@ import {
 	transformRoutineToAPI,
 	transformExerciseTemplateToAPI,
 	transformRoutineFolderToAPI,
+	transformBodyMeasurementToAPI,
+	transformWebhookSubscriptionToAPI,
 	PostWorkoutsRequestBodySchema,
 	PostRoutinesRequestBodySchema,
 	PostExerciseTemplateRequestBodySchema,
@@ -599,6 +601,79 @@ describe("Schema Transforms - API Output Validation", () => {
 			// Should validate
 			const result = PostWorkoutsRequestBodySchema.safeParse(output);
 			expect(result.success).toBe(true);
+		});
+	});
+
+	// ============================================
+	// BODY MEASUREMENT TRANSFORMS
+	// ============================================
+	describe("transformBodyMeasurementToAPI()", () => {
+		it("should produce a flat body (no wrapping object)", () => {
+			const output = transformBodyMeasurementToAPI({
+				date: "2024-08-14",
+				weight_kg: 80.5,
+				waist: 80,
+			});
+
+			expect(output).not.toHaveProperty("body_measurement");
+			expect(output).not.toHaveProperty("measurement");
+			expect(output).toEqual({ date: "2024-08-14", weight_kg: 80.5, waist: 80 });
+		});
+
+		it("should drop unspecified (undefined) metrics", () => {
+			const output = transformBodyMeasurementToAPI({
+				date: "2024-08-14",
+				weight_kg: 80.5,
+			});
+
+			expect(output).toHaveProperty("weight_kg", 80.5);
+			expect(output).not.toHaveProperty("fat_percent");
+			expect(output).not.toHaveProperty("waist");
+		});
+
+		it("should preserve explicit null metrics (meaningful for measurements)", () => {
+			const output = transformBodyMeasurementToAPI({
+				date: "2024-08-14",
+				weight_kg: null,
+				waist: 80,
+			});
+
+			expect(output).toHaveProperty("weight_kg", null);
+			expect(output).toHaveProperty("waist", 80);
+		});
+
+		it("should work for updates (no date field)", () => {
+			const output = transformBodyMeasurementToAPI({ weight_kg: 81 });
+
+			expect(output).toEqual({ weight_kg: 81 });
+			expect(output).not.toHaveProperty("date");
+		});
+	});
+
+	// ============================================
+	// WEBHOOK SUBSCRIPTION TRANSFORMS
+	// ============================================
+	describe("transformWebhookSubscriptionToAPI()", () => {
+		it("should map auth_token to authToken", () => {
+			const output = transformWebhookSubscriptionToAPI({
+				url: "https://example.com/hevy-webhook",
+				auth_token: "Bearer mytoken",
+			});
+
+			expect(output).toEqual({
+				url: "https://example.com/hevy-webhook",
+				authToken: "Bearer mytoken",
+			});
+			expect(output).not.toHaveProperty("auth_token");
+		});
+
+		it("should drop authToken when auth_token is not provided", () => {
+			const output = transformWebhookSubscriptionToAPI({
+				url: "https://example.com/hevy-webhook",
+			});
+
+			expect(output).toEqual({ url: "https://example.com/hevy-webhook" });
+			expect(output).not.toHaveProperty("authToken");
 		});
 	});
 });
