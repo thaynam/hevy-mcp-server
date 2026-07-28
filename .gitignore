@@ -178,3 +178,9 @@ dist
 .dev.vars*
 !.dev.vars.example
 !.env.example
+
+# Package manager: this project uses npm (package-lock.json is the source of truth).
+# Ignore other managers' lockfiles so a stray install can't drift the repo.
+pnpm-lock.yaml
+yarn.lock
+bun.lockb
