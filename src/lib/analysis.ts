@@ -130,10 +130,10 @@ export function formatBodyProgress(
 
 	lines.push("");
 	for (const m of summary.metrics) {
-		const arrow = m.change < 0 ? "▼" : m.change > 0 ? "▲" : "=";
+		// Facts only: signed change, no directional/judgment arrows.
 		const sign = m.change > 0 ? "+" : "";
 		lines.push(
-			`${m.field}: ${m.first} → ${m.last} (${arrow} ${sign}${m.change}) over ${m.count} entr${m.count === 1 ? "y" : "ies"}`,
+			`${m.field}: ${m.first} → ${m.last} (change ${sign}${m.change}) over ${m.count} entr${m.count === 1 ? "y" : "ies"}`,
 		);
 	}
 
@@ -150,9 +150,9 @@ export interface TrainingSummary {
 	activeDays: number;
 	/** Total number of exercises across the window's workouts. */
 	totalExercises: number;
-	/** Total number of sets across the window's workouts. */
-	totalSets: number;
-	/** Total training volume (sum of weight_kg × reps) in kilograms. */
+	/** Number of effective (non-warmup) sets across the window's workouts. */
+	effectiveSets: number;
+	/** Training volume (sum of weight_kg × reps) over effective sets, in kg. */
 	totalVolumeKg: number;
 	/** Average workouts per week over the window. */
 	avgWorkoutsPerWeek: number;
@@ -171,8 +171,8 @@ function workoutDate(workout: WorkoutLike): string | undefined {
 }
 
 /**
- * Aggregates training activity (workouts, sets, volume) for workouts dated
- * on/after `since`.
+ * Aggregates training activity (workouts, effective sets, volume) for workouts
+ * dated on/after `since`. Warmup sets are excluded from set and volume counts.
  *
  * Volume counts a set only when both weight_kg and reps are numeric.
  *
@@ -198,7 +198,7 @@ export function analyzeTrainingSummary(
 
 	const activeDays = new Set<string>();
 	let totalExercises = 0;
-	let totalSets = 0;
+	let effectiveSets = 0;
 	let totalVolumeKg = 0;
 
 	for (const workout of inWindow) {
@@ -210,8 +210,9 @@ export function analyzeTrainingSummary(
 
 		for (const exercise of exercises) {
 			const sets = Array.isArray(exercise?.sets) ? exercise.sets : [];
-			totalSets += sets.length;
-			for (const set of sets) {
+			const effective = sets.filter(isEffectiveSet);
+			effectiveSets += effective.length;
+			for (const set of effective) {
 				if (
 					typeof set?.weight_kg === "number" &&
 					typeof set?.reps === "number"
@@ -227,7 +228,7 @@ export function analyzeTrainingSummary(
 		workoutCount: inWindow.length,
 		activeDays: activeDays.size,
 		totalExercises,
-		totalSets,
+		effectiveSets,
 		totalVolumeKg: roundTo2(totalVolumeKg),
 		avgWorkoutsPerWeek: roundTo2(inWindow.length / Math.max(weeks, 1)),
 	};
@@ -255,7 +256,7 @@ export function formatTrainingSummary(
 		`Training summary over the last ${weeks} week(s) (since ${summary.since}):`,
 		`Workouts: ${summary.workoutCount} (${summary.avgWorkoutsPerWeek}/week, ${summary.activeDays} active day(s))`,
 		`From ${summary.firstDate} to ${summary.lastDate}.`,
-		`Exercises: ${summary.totalExercises} | Sets: ${summary.totalSets} | Volume: ${summary.totalVolumeKg} kg`,
+		`Exercises: ${summary.totalExercises} | Effective sets: ${summary.effectiveSets} | Volume: ${summary.totalVolumeKg} kg`,
 	].join("\n");
 }
 

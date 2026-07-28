@@ -94,7 +94,7 @@ describe("analysis - formatBodyProgress", () => {
 		);
 	});
 
-	it("renders per-metric trend lines with direction arrows", () => {
+	it("renders per-metric trend lines with signed change, no judgment arrows", () => {
 		const summary = analyzeBodyProgress(
 			[
 				{ date: "2024-08-01", weight_kg: 82 },
@@ -104,7 +104,9 @@ describe("analysis - formatBodyProgress", () => {
 		);
 		const text = formatBodyProgress(summary, 8);
 		expect(text).toContain("weight_kg: 82 → 80");
-		expect(text).toContain("▼ -2");
+		expect(text).toContain("change -2");
+		expect(text).not.toContain("▼");
+		expect(text).not.toContain("▲");
 	});
 });
 
@@ -130,15 +132,37 @@ describe("analysis - analyzeTrainingSummary", () => {
 		{ start_time: "2024-06-01T10:00:00Z", exercises: [{ sets: [{ weight_kg: 80, reps: 5 }] }] },
 	];
 
-	it("counts workouts, sets, exercises and volume in the window", () => {
+	it("counts workouts, effective sets, exercises and volume in the window", () => {
 		const s = analyzeTrainingSummary(workouts, "2024-07-15", 4);
 		expect(s.workoutCount).toBe(2);
 		expect(s.activeDays).toBe(2);
 		expect(s.totalExercises).toBe(3);
-		expect(s.totalSets).toBe(5);
+		expect(s.effectiveSets).toBe(5);
 		expect(s.totalVolumeKg).toBe(2100); // 500+500+500+600
 		expect(s.firstDate).toBe("2024-08-01");
 		expect(s.lastDate).toBe("2024-08-03");
+	});
+
+	it("excludes warmup sets from effectiveSets and volume", () => {
+		const s = analyzeTrainingSummary(
+			[
+				{
+					start_time: "2024-08-01T10:00:00Z",
+					exercises: [
+						{
+							sets: [
+								{ type: "warmup", weight_kg: 60, reps: 10 }, // excluded
+								{ type: "normal", weight_kg: 100, reps: 5 }, // 500
+							],
+						},
+					],
+				},
+			],
+			"2024-01-01",
+			1,
+		);
+		expect(s.effectiveSets).toBe(1);
+		expect(s.totalVolumeKg).toBe(500);
 	});
 
 	it("computes average workouts per week from the window length", () => {
@@ -152,7 +176,7 @@ describe("analysis - analyzeTrainingSummary", () => {
 			"2024-01-01",
 			1,
 		);
-		expect(s.totalSets).toBe(2);
+		expect(s.effectiveSets).toBe(2);
 		expect(s.totalVolumeKg).toBe(0);
 	});
 

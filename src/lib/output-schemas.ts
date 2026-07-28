@@ -156,7 +156,7 @@ export const HEVY_TOOL_OUTPUT_SCHEMAS: Record<string, z.ZodRawShape> = {
 		workoutCount: z.number(),
 		activeDays: z.number(),
 		totalExercises: z.number(),
-		totalSets: z.number(),
+		effectiveSets: z.number(),
 		totalVolumeKg: z.number(),
 		avgWorkoutsPerWeek: z.number(),
 		firstDate: z.string().optional(),
