@@ -11,6 +11,21 @@ export interface HevyClientConfig {
    * Base URL for the Hevy API (defaults to the production API)
    */
   baseUrl?: string;
+
+  /**
+   * Maximum number of automatic retries for transient failures.
+   * Defaults to 0 (no retries) to keep behavior explicit and predictable.
+   * GET requests retry on network errors, 429, and 5xx; write requests retry
+   * only on 429 (which means the request was rejected, not processed).
+   */
+  maxRetries?: number;
+
+  /**
+   * Base delay (ms) for exponential backoff between retries. Defaults to 300.
+   * Actual delay is `retryDelayMs * 2^attempt`, capped, and overridden by a
+   * `Retry-After` response header when present.
+   */
+  retryDelayMs?: number;
 }
 
 /**
@@ -36,6 +51,9 @@ export class HevyApiError extends Error {
 export class HevyClient {
   private apiKey: string;
   private baseUrl: string;
+  private maxRetries: number;
+  private retryDelayMs: number;
+  private readonly maxDelayMs = 8000;
 
   /**
    * Create a new Hevy API client
@@ -43,6 +61,38 @@ export class HevyClient {
   constructor(config: HevyClientConfig) {
     this.apiKey = config.apiKey;
     this.baseUrl = config.baseUrl || 'https://api.hevyapp.com';
+    this.maxRetries = config.maxRetries ?? 0;
+    this.retryDelayMs = config.retryDelayMs ?? 300;
+  }
+
+  /**
+   * Whether a failed response is worth retrying for the given method.
+   * - 429 (rate limited): safe to retry any method — the request was rejected.
+   * - 5xx: retry reads only; retrying writes risks duplicate side effects.
+   */
+  private isRetryableStatus(method: string, status: number): boolean {
+    if (status === 429) return true;
+    if (method === 'GET' && status >= 500) return true;
+    return false;
+  }
+
+  /**
+   * Computes the backoff delay (ms) before a retry. Honors a numeric
+   * `Retry-After` (seconds) header when present, otherwise exponential.
+   */
+  private backoffDelay(attempt: number, retryAfter?: string | null): number {
+    if (retryAfter) {
+      const seconds = Number(retryAfter);
+      if (Number.isFinite(seconds) && seconds >= 0) {
+        return Math.min(seconds * 1000, this.maxDelayMs);
+      }
+    }
+    return Math.min(this.retryDelayMs * 2 ** attempt, this.maxDelayMs);
+  }
+
+  private sleep(ms: number): Promise<void> {
+    if (ms <= 0) return Promise.resolve();
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
@@ -76,28 +126,52 @@ export class HevyClient {
       'Content-Type': 'application/json',
     });
 
-    // Make the request
-    const response = await fetch(url, {
+    const requestInit: RequestInit = {
       method,
       headers,
       body: body ? JSON.stringify(body) : null,
-    });
+    };
 
-    // Parse the response
-    const data = response.headers.get('Content-Type')?.includes('application/json')
-      ? await response.json()
-      : await response.text();
+    // Attempt the request, retrying transient failures with backoff.
+    for (let attempt = 0; ; attempt++) {
+      let response: Response;
+      try {
+        response = await fetch(url, requestInit);
+      } catch (networkError) {
+        // Network-level failure: retry reads only (writes are ambiguous).
+        if (attempt < this.maxRetries && method === 'GET') {
+          await this.sleep(this.backoffDelay(attempt));
+          continue;
+        }
+        throw networkError;
+      }
 
-    // Handle error responses
-    if (!response.ok) {
-      throw new HevyApiError(
-        `Hevy API request failed: ${response.status} ${response.statusText}`,
-        response.status,
-        data
-      );
+      // Parse the response
+      const data = response.headers.get('Content-Type')?.includes('application/json')
+        ? await response.json()
+        : await response.text();
+
+      // Handle error responses
+      if (!response.ok) {
+        if (
+          attempt < this.maxRetries &&
+          this.isRetryableStatus(method, response.status)
+        ) {
+          await this.sleep(
+            this.backoffDelay(attempt, response.headers.get('Retry-After'))
+          );
+          continue;
+        }
+
+        throw new HevyApiError(
+          `Hevy API request failed: ${response.status} ${response.statusText}`,
+          response.status,
+          data
+        );
+      }
+
+      return data as T;
     }
-
-    return data as T;
   }
 
   /**

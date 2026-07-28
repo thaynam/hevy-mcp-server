@@ -68,9 +68,12 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
       );
     }
 
-    // Initialize Hevy API client with user-specific API key
+    // Initialize Hevy API client with user-specific API key.
+    // Enable retries so transient Hevy rate limits / 5xx don't surface as
+    // hard tool failures.
     this.client = new HevyClient({
       apiKey: this.props.hevyApiKey,
+      maxRetries: 3,
     });
 
     // ============================================
