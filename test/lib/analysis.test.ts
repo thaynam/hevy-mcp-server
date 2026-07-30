@@ -5,6 +5,7 @@ import {
 	analyzeTrainingSummary,
 	formatTrainingSummary,
 	analyzeProgressionDeltas,
+	analyzeWindowProgression,
 	computeExerciseOccurrence,
 	analyzePersonalRecords,
 	compareWorkouts,
@@ -387,6 +388,137 @@ describe("analysis - analyzeProgressionDeltas", () => {
 			{ scannedWorkouts: 1, truncated: false },
 		);
 		expect(r.exercises[0].occurrences).toBeUndefined();
+	});
+});
+
+describe("analysis - analyzeWindowProgression", () => {
+	// Window since 2024-08-05: legs day (08-09), push day (08-07). Pull day and
+	// older bench sit BEFORE the window.
+	const workouts = [
+		{
+			id: "w_legs",
+			start_time: "2024-08-09T10:00:00Z",
+			exercises: [
+				{ exercise_template_id: "SQUAT", title: "Squat", sets: [{ type: "warmup", weight_kg: 80, reps: 8 }, { type: "normal", weight_kg: 140, reps: 5, rpe: 8 }] },
+			],
+		},
+		{
+			id: "w_push",
+			start_time: "2024-08-07T10:00:00Z",
+			exercises: [
+				{ exercise_template_id: "BENCH", title: "Bench Press", sets: [{ type: "normal", weight_kg: 102.5, reps: 5 }] },
+			],
+		},
+		// Before the window:
+		{
+			id: "w_pull",
+			start_time: "2024-08-03T10:00:00Z",
+			exercises: [
+				{ exercise_template_id: "ROW", title: "Row", sets: [{ type: "normal", weight_kg: 80, reps: 10 }] },
+			],
+		},
+		{
+			id: "w_bench_prev",
+			start_time: "2024-08-01T10:00:00Z",
+			exercises: [
+				{ exercise_template_id: "BENCH", sets: [{ type: "normal", weight_kg: 100, reps: 5 }] },
+			],
+		},
+		{
+			id: "w_squat_prev",
+			start_time: "2024-07-30T10:00:00Z",
+			exercises: [
+				{ exercise_template_id: "SQUAT", sets: [{ type: "normal", weight_kg: 135, reps: 5, rpe: 8 }] },
+			],
+		},
+	];
+
+	it("unions exercises across all window sessions, one entry per template", () => {
+		const r = analyzeWindowProgression(workouts, "2024-08-05", 1, {
+			scannedWorkouts: 5,
+			truncated: false,
+		});
+		expect(r.exercises.map((e) => e.exercise_template_id).sort()).toEqual([
+			"BENCH",
+			"SQUAT",
+		]);
+		// ROW was only trained before the window → not included
+		expect(r.window.sessionCount).toBe(2);
+		expect(r.window.workoutIds).toEqual(["w_legs", "w_push"]);
+	});
+
+	it("dedups to the most recent in-window occurrence per exercise", () => {
+		const twoBenchDays = [
+			{ id: "w_new", start_time: "2024-08-09T10:00:00Z", exercises: [{ exercise_template_id: "BENCH", sets: [{ type: "normal", weight_kg: 105, reps: 5 }] }] },
+			{ id: "w_mid", start_time: "2024-08-06T10:00:00Z", exercises: [{ exercise_template_id: "BENCH", sets: [{ type: "normal", weight_kg: 102.5, reps: 5 }] }] },
+		];
+		const r = analyzeWindowProgression(twoBenchDays, "2024-08-05", 1, {
+			scannedWorkouts: 2,
+			truncated: false,
+		});
+		expect(r.exercises).toHaveLength(1);
+		expect(r.exercises[0].current.workout_id).toBe("w_new");
+		// The in-window mid occurrence becomes the previous
+		expect(r.exercises[0].previous?.workout_id).toBe("w_mid");
+		expect(r.exercises[0].delta?.top_set_weight_kg).toBe(2.5);
+	});
+
+	it("resolves previous from BEFORE the window when needed", () => {
+		const r = analyzeWindowProgression(workouts, "2024-08-05", 1, {
+			scannedWorkouts: 5,
+			truncated: false,
+		});
+		const bench = r.exercises.find((e) => e.exercise_template_id === "BENCH");
+		expect(bench?.previous?.workout_id).toBe("w_bench_prev"); // 08-01, pre-window
+		expect(bench?.delta?.top_set_weight_kg).toBe(2.5); // 102.5 − 100
+		expect(r.exercises_without_previous).toBe(0);
+	});
+
+	it("returns a normal empty result for an empty window", () => {
+		const r = analyzeWindowProgression(workouts, "2030-01-01", 1, {
+			scannedWorkouts: 5,
+			truncated: false,
+		});
+		expect(r.exercises).toEqual([]);
+		expect(r.window.sessionCount).toBe(0);
+		expect(r.exercises_without_previous).toBe(0);
+	});
+
+	it("excludes warmup sets from the per-exercise metrics", () => {
+		const r = analyzeWindowProgression(workouts, "2024-08-05", 1, {
+			scannedWorkouts: 5,
+			truncated: false,
+		});
+		const squat = r.exercises.find((e) => e.exercise_template_id === "SQUAT");
+		expect(squat?.current.effective_sets).toBe(1); // warmup excluded
+		expect(squat?.current.total_volume_kg).toBe(700); // 140×5 only
+	});
+
+	it("keeps delta.top_set_rpe null (not zero) when one side lacks RPE", () => {
+		const r = analyzeWindowProgression(workouts, "2024-08-05", 1, {
+			scannedWorkouts: 5,
+			truncated: false,
+		});
+		const bench = r.exercises.find((e) => e.exercise_template_id === "BENCH");
+		// current bench has no RPE; previous has none either → null
+		expect(bench?.delta?.top_set_rpe).toBeNull();
+		const squat = r.exercises.find((e) => e.exercise_template_id === "SQUAT");
+		// both squat sides have RPE 8 → 0 is a real value here
+		expect(squat?.delta?.top_set_rpe).toBe(0);
+	});
+
+	it("passes truncated through and supports history_depth occurrences", () => {
+		const r = analyzeWindowProgression(workouts, "2024-08-05", 1, {
+			scannedWorkouts: 5,
+			truncated: true,
+			historyDepth: 2,
+		});
+		expect(r.truncated).toBe(true);
+		const bench = r.exercises.find((e) => e.exercise_template_id === "BENCH");
+		expect(bench?.occurrences?.map((o) => o.workout_id)).toEqual([
+			"w_push",
+			"w_bench_prev",
+		]);
 	});
 });
 

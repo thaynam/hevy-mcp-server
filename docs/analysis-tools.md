@@ -9,6 +9,7 @@ paging through dozens of measurements/workouts and doing the math client-side.
 | `get_body_progress` | How are weight / body-fat / circumferences trending? | 8 weeks |
 | `get_training_summary` | How consistent is training, and what's the load? | 4 weeks |
 | `get_progression_deltas` | For each exercise this session, how does it compare to its last time? | most recent workout |
+| `get_window_progression` | For every exercise trained in the window, how does it compare to its last time? | 1 week |
 | `get_personal_records` | What are the maxima per exercise? | all scanned history |
 | `compare_workouts` | How do two specific workouts differ? | two IDs |
 | `get_previous_routine_instance` | What was the previous run of this routine? | a routine ID |
@@ -182,6 +183,62 @@ come back `null`; `effective_sets`/`total_reps` are still valid.
 `top_set_rpe` is the raw RPE difference at the top set — e.g. same load × reps
 with rising RPE is a fatigue **fact** the coach can interpret. It is `null`
 (never zero) when either side has no RPE logged.
+
+---
+
+## `get_window_progression`
+
+The window-wide version of `get_progression_deltas`: **every** exercise trained
+at least once in the last N weeks (legs + push + pull days together), each vs.
+the previous occurrence of its own `exercise_template_id` — in **one call and
+one server-side scan**, instead of calling `get_progression_deltas` per
+workout and merging client-side. `get_progression_deltas` is unchanged; use it
+when you want exactly one session.
+
+**Input**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `weeks` | integer | `1` | 1–52. Window = today − `weeks` (calendar day, like the other window tools). |
+| `history_depth` | integer | `1` | 1–20. Same meaning as in `get_progression_deltas` (per-exercise `occurrences` array). |
+| `max_pages` | integer | `20` | 1–100. Scan depth (~10 workouts/page). |
+
+**Semantics (per exercise, keyed by `exercise_template_id`)**
+
+- Every exercise trained ≥ 1× in the window gets **one** entry (deduplicated —
+  not repeated per session).
+- `current` = its most recent occurrence **inside** the window.
+- `previous` = the occurrence immediately before that one — which may fall
+  inside **or before** the window; `null` on first-ever occurrence.
+- `delta` / `occurrences` / all per-exercise math (effective sets, volume, Epley
+  1RM, `top_set` with weight/reps/rpe, `top_set_rpe` null when either side lacks
+  RPE) are **identical** to `get_progression_deltas`.
+
+```jsonc
+{
+  "window": {
+    "since": "2026-07-23", "weeks": 1,
+    "sessionCount": 5,
+    "workoutIds": ["…", "…"]           // most recent first
+  },
+  "exercises": [                        // one entry per template, most recent current first
+    {
+      "exercise_template_id": "D04AC939",
+      "exercise_title": "Bench Press (Barbell)",
+      "current":  { /* same occurrence shape as get_progression_deltas */ },
+      "previous": { /* same shape; null on first-ever occurrence */ },
+      "delta":    { /* current − previous, raw; null if previous null */ },
+      "occurrences": [ /* current + N priors — only when history_depth > 1 */ ]
+    }
+  ],
+  "scanned_workouts": 140,
+  "exercises_without_previous": 0,
+  "truncated": false
+}
+```
+
+An empty window is a normal result (`exercises: []`, `sessionCount: 0`), not an
+error.
 
 ---
 
@@ -372,6 +429,8 @@ with MCPServerAdapter(server_params) as tools:
 - **Multi-session trend / fatigue check:** `get_progression_deltas(history_depth=3)`
   to see the last 3 occurrences of each exercise in one call — e.g. load flat
   while `top_set_rpe` rises across sessions.
+- **Week in review:** `get_window_progression(weeks=1)` — every exercise trained
+  this week vs. its own last time, in one call; no per-workout calls + merge.
 - **Routine comparison:** `get_previous_routine_instance(routine_id)` → feed
   `anchor` + `previous` workout IDs into `compare_workouts`.
 - **Programming check:** `get_muscle_balance(weeks=8)` for the raw split; the

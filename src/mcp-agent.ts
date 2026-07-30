@@ -39,6 +39,8 @@ import {
   formatTrainingSummary,
   analyzeProgressionDeltas,
   formatProgressionDeltas,
+  analyzeWindowProgression,
+  formatWindowProgression,
   analyzePersonalRecords,
   formatPersonalRecords,
   compareWorkouts,
@@ -1403,6 +1405,96 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
               {
                 type: "text",
                 text: formatProgressionDeltas(summary),
+              },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,
+              },
+            ],
+            structuredContent: summary,
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "get_window_progression",
+      {
+        weeks: z
+          .number()
+          .int()
+          .min(1)
+          .max(52)
+          .optional()
+          .describe("Window of recent weeks to review (1-52)")
+          .default(1),
+        history_depth: z
+          .number()
+          .int()
+          .min(1)
+          .max(20)
+          .optional()
+          .describe(
+            "Prior occurrences to return per exercise (default 1). When >1, each exercise gets an `occurrences` array (current + priors, most recent first).",
+          )
+          .default(1),
+        max_pages: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe(
+            "Max workout pages to scan (~10 workouts/page). Default 20; raise for deep history.",
+          )
+          .default(20),
+      },
+      async ({ weeks, history_depth, max_pages }) => {
+        try {
+          const since = new Date(Date.now() - weeks * 7 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10);
+
+          // Page through workouts (pageSize max 10), capped for safety. We need
+          // history beyond the window to resolve each exercise's previous
+          // occurrence.
+          const MAX_PAGES = max_pages;
+          const pageSize = 10;
+          const workouts: any[] = [];
+          let page = 1;
+          let pageCount = 1;
+          let scannedAllPages = true;
+
+          while (page <= pageCount) {
+            if (page > MAX_PAGES) {
+              scannedAllPages = false;
+              break;
+            }
+            let result: any;
+            try {
+              result = await this.client.getWorkouts({ page, pageSize });
+            } catch (error) {
+              if (isNotFoundError(error)) break;
+              throw error;
+            }
+            workouts.push(...(result.workouts ?? []));
+            pageCount = result.page_count ?? page;
+            page++;
+          }
+
+          const summary = analyzeWindowProgression(workouts, since, weeks, {
+            scannedWorkouts: workouts.length,
+            truncated: !scannedAllPages,
+            historyDepth: history_depth,
+          });
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: formatWindowProgression(summary),
               },
               {
                 type: "text",

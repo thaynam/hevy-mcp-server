@@ -217,6 +217,27 @@ export const HEVY_TOOL_OUTPUT_SCHEMAS: Record<string, z.ZodRawShape> = {
 		exercises_without_previous: z.number(),
 		truncated: z.boolean(),
 	},
+	get_window_progression: {
+		window: z.object({
+			since: z.string(),
+			weeks: z.number(),
+			sessionCount: z.number(),
+			workoutIds: z.array(z.string()),
+		}),
+		exercises: z.array(
+			z.object({
+				exercise_template_id: z.string(),
+				exercise_title: z.string().optional(),
+				current: exerciseOccurrence,
+				previous: exerciseOccurrence.nullable(),
+				delta: progressionDelta.nullable(),
+				occurrences: z.array(exerciseOccurrence).optional(),
+			}),
+		),
+		scanned_workouts: z.number(),
+		exercises_without_previous: z.number(),
+		truncated: z.boolean(),
+	},
 	get_personal_records: {
 		records: z.array(
 			z.object({

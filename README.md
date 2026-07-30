@@ -19,7 +19,7 @@ It exposes Hevy data and actions as MCP tools for AI clients, with OAuth 2.1 aut
 - **Routine folders:** `get_routine_folders`, `get_routine_folder`, `create_routine_folder`
 - **User:** `get_user_info`
 - **Body measurements:** `get_body_measurements`, `get_body_measurement`, `create_body_measurement`, `update_body_measurement`, `get_body_progress`
-- **Analysis (facts only — the AI coach owns judgment):** `get_body_progress`, `get_training_summary`, `get_progression_deltas`, `get_personal_records`, `compare_workouts`, `get_previous_routine_instance`, `get_muscle_balance` — see [docs/analysis-tools.md](docs/analysis-tools.md) for the integration guide (auth, output schemas, examples).
+- **Analysis (facts only — the AI coach owns judgment):** `get_body_progress`, `get_training_summary`, `get_progression_deltas`, `get_window_progression`, `get_personal_records`, `compare_workouts`, `get_previous_routine_instance`, `get_muscle_balance` — see [docs/analysis-tools.md](docs/analysis-tools.md) for the integration guide (auth, output schemas, examples).
 - **Webhooks:** `get_webhook_subscription`, `create_webhook_subscription`, `delete_webhook_subscription`
 
 ## Quick start (local)

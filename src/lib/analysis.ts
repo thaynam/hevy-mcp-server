@@ -684,6 +684,185 @@ export function formatProgressionDeltas(result: ProgressionDeltasResult): string
 	return lines.join("\n");
 }
 
+// ── Window progression ──────────────────────────────────────────────────────
+//
+// One-scan "review of the window": every exercise trained at least once in the
+// last N weeks, each vs. its own previous occurrence (which may fall before the
+// window). Same fact-only per-exercise math as get_progression_deltas — only
+// where current/previous come from changes (window instead of a single session).
+
+export interface WindowProgressionResult {
+	window: {
+		since: string;
+		weeks: number;
+		/** Workouts inside the window. */
+		sessionCount: number;
+		/** Their ids, most recent first. */
+		workoutIds: string[];
+	};
+	/** One entry per exercise_template_id (deduplicated; most recent in window). */
+	exercises: ExerciseProgression[];
+	scanned_workouts: number;
+	exercises_without_previous: number;
+	truncated: boolean;
+}
+
+/**
+ * For every exercise trained in the window (date >= since), returns the raw
+ * diff of its most recent in-window occurrence vs. the occurrence immediately
+ * before it (in or before the window; null on first-ever occurrence).
+ *
+ * @param workouts - All scanned workouts (any order)
+ * @param since - Inclusive window lower bound (YYYY-MM-DD)
+ * @param weeks - Window length (echoed in the result)
+ * @param options.historyDepth - Prior occurrences to collect per exercise
+ *   (default 1). When > 1, each exercise gets an `occurrences` array
+ *   (current + priors, most recent first).
+ */
+export function analyzeWindowProgression(
+	workouts: any[],
+	since: string,
+	weeks: number,
+	options: { scannedWorkouts: number; truncated: boolean; historyDepth?: number },
+): WindowProgressionResult {
+	const historyDepth = Math.max(1, Math.floor(options.historyDepth ?? 1));
+
+	// All workouts, most recent first.
+	const sorted = [...workouts].sort((a, b) => {
+		const da = workoutStart(a);
+		const db = workoutStart(b);
+		return da < db ? 1 : da > db ? -1 : 0;
+	});
+
+	const windowWorkouts = sorted.filter(
+		(w) => workoutStart(w).slice(0, 10) >= since,
+	);
+
+	// Per template: its occurrences across ALL scanned workouts, most recent
+	// first (one per workout — first matching entry, as in get_progression_deltas).
+	interface RawOccurrence {
+		exercise: any;
+		workoutId: string;
+		date: string;
+	}
+	const byTemplate = new Map<string, RawOccurrence[]>();
+	for (const workout of sorted) {
+		const workoutId = typeof workout?.id === "string" ? workout.id : "";
+		const date = workoutStart(workout).slice(0, 10);
+		const exercises: any[] = Array.isArray(workout?.exercises)
+			? workout.exercises
+			: [];
+		const seenInWorkout = new Set<string>();
+		for (const exercise of exercises) {
+			const templateId =
+				typeof exercise?.exercise_template_id === "string"
+					? exercise.exercise_template_id
+					: "";
+			if (!templateId || seenInWorkout.has(templateId)) continue;
+			seenInWorkout.add(templateId);
+			const list = byTemplate.get(templateId) ?? [];
+			list.push({ exercise, workoutId, date });
+			byTemplate.set(templateId, list);
+		}
+	}
+
+	let withoutPrevious = 0;
+	const exercises: ExerciseProgression[] = [];
+	for (const [templateId, occurrencesRaw] of byTemplate) {
+		// Most recent occurrence overall; the template counts only if it's in the window.
+		const head = occurrencesRaw[0];
+		if (head.date < since) continue;
+
+		const current = computeExerciseOccurrence(
+			head.exercise,
+			head.workoutId,
+			head.date,
+		);
+		const priorOccurrences = occurrencesRaw
+			.slice(1, 1 + historyDepth)
+			.map((o) => computeExerciseOccurrence(o.exercise, o.workoutId, o.date));
+
+		const previous = priorOccurrences[0] ?? null;
+		if (previous === null) withoutPrevious++;
+
+		const entry: ExerciseProgression = {
+			exercise_template_id: templateId,
+			current,
+			previous,
+			delta: previous ? computeProgressionDelta(current, previous) : null,
+		};
+		if (historyDepth > 1) {
+			entry.occurrences = [current, ...priorOccurrences];
+		}
+		const title = occurrencesRaw.find(
+			(o) => typeof o.exercise?.title === "string",
+		)?.exercise.title;
+		if (title !== undefined) entry.exercise_title = title;
+		exercises.push(entry);
+	}
+
+	// Most recent current first; template_id as a stable tiebreaker.
+	exercises.sort((a, b) =>
+		a.current.date < b.current.date
+			? 1
+			: a.current.date > b.current.date
+				? -1
+				: a.exercise_template_id < b.exercise_template_id
+					? -1
+					: 1,
+	);
+
+	return {
+		window: {
+			since,
+			weeks,
+			sessionCount: windowWorkouts.length,
+			workoutIds: windowWorkouts.map((w) =>
+				typeof w?.id === "string" ? w.id : "",
+			),
+		},
+		exercises,
+		scanned_workouts: options.scannedWorkouts,
+		exercises_without_previous: withoutPrevious,
+		truncated: options.truncated,
+	};
+}
+
+/** Neutral, factual rendering — no good/bad language. */
+export function formatWindowProgression(
+	result: WindowProgressionResult,
+): string {
+	const w = result.window;
+	if (result.exercises.length === 0) {
+		return `No exercises trained in the last ${w.weeks} week(s) (since ${w.since}).`;
+	}
+
+	const lines: string[] = [];
+	lines.push(
+		`Window progression since ${w.since} (${w.weeks} week(s), ${w.sessionCount} session(s), ${result.exercises.length} exercise(s)):`,
+	);
+	for (const ex of result.exercises) {
+		const title = ex.exercise_title ?? ex.exercise_template_id;
+		const c = ex.current;
+		if (!ex.previous) {
+			lines.push(
+				`${title} (${c.date}): no previous occurrence found. Top set ${formatTopSet(c.top_set)}, effective sets ${c.effective_sets}, volume ${c.total_volume_kg}kg.`,
+			);
+		} else {
+			const p = ex.previous;
+			lines.push(
+				`${title} (${c.date}): top set ${formatTopSet(c.top_set)} vs ${formatTopSet(p.top_set)}; effective sets ${c.effective_sets} vs ${p.effective_sets}; volume ${c.total_volume_kg} vs ${p.total_volume_kg}kg (prev ${p.date}).`,
+			);
+		}
+	}
+	if (result.truncated) {
+		lines.push(
+			`(Note: only the first ${result.scanned_workouts} workouts were scanned; some previous occurrences may be older.)`,
+		);
+	}
+	return lines.join("\n");
+}
+
 // ── Workout comparison ───────────────────────────────────────────────────────
 //
 // Raw diff between two specific workouts. Components are returned separately —

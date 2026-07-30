@@ -174,6 +174,13 @@ export const HEVY_TOOL_DESCRIPTIONS: Record<string, string> = {
 			"Use to get facts for a progression decision: current vs previous top set, effective sets (warmup excluded), volume, reps, RPE, and Epley estimated 1RM, plus raw deltas. Returns numbers only — no good/bad labels; the caller applies meaning (a load drop can be preservation in a cut or regression in a bulk).",
 		note: "current session defaults to the most recent workout; scans recent history to find each exercise's prior occurrence (previous is null on first-ever occurrence).",
 	}),
+	get_window_progression: describeTool({
+		summary:
+			"Read-only. For EVERY exercise trained in the last N weeks, returns the raw diff of its most recent in-window occurrence vs. its own previous occurrence (matched by exercise_template_id; previous may fall before the window).",
+		useCase:
+			"Use for a week-in-review in one call instead of calling get_progression_deltas per workout: one deduplicated entry per exercise across all sessions in the window (legs + push + pull), each vs. its last time. Numbers only — the caller applies meaning.",
+		note: "weeks defaults to 1 (1-52); history_depth >1 adds an occurrences array per exercise; previous is null on first-ever occurrence.",
+	}),
 	get_personal_records: describeTool({
 		summary:
 			"Read-only. Per exercise (by template_id), the maxima across scanned workouts: heaviest set, best Epley estimated 1RM, and most reps — each with date and workout_id.",
