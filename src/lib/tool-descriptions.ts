@@ -167,6 +167,48 @@ export const HEVY_TOOL_DESCRIPTIONS: Record<string, string> = {
 			"Use for a training-load/consistency overview instead of paging through get_workouts; reports workout count, per-week average, active days, total sets and volume (kg).",
 		note: "weeks defaults to 4 (1-52); scans the account's recent workouts.",
 	}),
+	get_progression_deltas: describeTool({
+		summary:
+			"Read-only. For each exercise in a session, returns the RAW diff vs. the previous occurrence of the same exercise (matched by exercise_template_id across earlier workouts).",
+		useCase:
+			"Use to get facts for a progression decision: current vs previous top set, effective sets (warmup excluded), volume, reps, RPE, and Epley estimated 1RM, plus raw deltas. Returns numbers only — no good/bad labels; the caller applies meaning (a load drop can be preservation in a cut or regression in a bulk).",
+		note: "current session defaults to the most recent workout; scans recent history to find each exercise's prior occurrence (previous is null on first-ever occurrence).",
+	}),
+	get_window_progression: describeTool({
+		summary:
+			"Read-only. For EVERY exercise trained in the last N weeks, returns the raw diff of its most recent in-window occurrence vs. its own previous occurrence (matched by exercise_template_id; previous may fall before the window).",
+		useCase:
+			"Use for a week-in-review in one call instead of calling get_progression_deltas per workout: one deduplicated entry per exercise across all sessions in the window (legs + push + pull), each vs. its last time. Numbers only — the caller applies meaning.",
+		note: "weeks defaults to 1 (1-52); history_depth >1 adds an occurrences array per exercise; previous is null on first-ever occurrence.",
+	}),
+	get_personal_records: describeTool({
+		summary:
+			"Read-only. Per exercise (by template_id), the maxima across scanned workouts: heaviest set, best Epley estimated 1RM, and most reps — each with date and workout_id.",
+		useCase:
+			"Use to surface records as facts; the caller decides how to celebrate/use them. Warmup excluded. Optionally restrict to one exercise_template_id.",
+		note: "scans recent workouts (capped); a record older than the scan window won't appear.",
+	}),
+	compare_workouts: describeTool({
+		summary:
+			"Read-only. Raw component-wise diff of two workouts (by ID): tonnage (Σ weight×reps), effective sets, duration, and which exercises are in both / only A / only B.",
+		useCase:
+			"Use when the caller already has two workout IDs to compare. Components are returned separately — never a single score, never a shorter/worse label.",
+		note: "warmup excluded; exercise presence keyed by template_id. Pair with get_previous_routine_instance to find the prior instance of a routine.",
+	}),
+	get_previous_routine_instance: describeTool({
+		summary:
+			"Read-only. Finds instances of a routine_id and returns the anchor instance and the one before it (workout_id + date).",
+		useCase:
+			"Use to identify the previous run of the same routine so the caller can feed both IDs to compare_workouts. Matching same-routine sessions is a fact (routine_id); matching sessions without a routine is left to the caller.",
+		note: "anchor defaults to the most recent instance; pass before_workout_id to anchor elsewhere.",
+	}),
+	get_muscle_balance: describeTool({
+		summary:
+			"Read-only. Distribution of effective sets and volume per primary muscle group over the last N weeks (numbers only).",
+		useCase:
+			"Use to get the raw per-muscle-group split; the caller decides whether it's balanced for the user's goal. Joins workouts to the exercise catalog by template_id.",
+		note: "weeks defaults to 4 (1-52); warmup excluded; unmapped_exercises counts exercises whose template isn't in the catalog.",
+	}),
 	// Webhook subscription
 	get_webhook_subscription: describeTool({
 		summary:

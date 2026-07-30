@@ -37,6 +37,15 @@ import {
   formatBodyProgress,
   analyzeTrainingSummary,
   formatTrainingSummary,
+  analyzeProgressionDeltas,
+  formatProgressionDeltas,
+  analyzeWindowProgression,
+  formatWindowProgression,
+  analyzePersonalRecords,
+  formatPersonalRecords,
+  compareWorkouts,
+  findPreviousRoutineInstance,
+  analyzeMuscleBalance,
 } from "./lib/analysis.js";
 import { filterExerciseTemplates } from "./lib/exercise-search.js";
 import { isNotFoundError } from "./lib/hevy-error-policy.js";
@@ -1256,6 +1265,523 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, Props> {
                 type: "text",
                 text: reportParts.join("\n"),
               },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,
+              },
+            ],
+            structuredContent: summary,
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "get_progression_deltas",
+      {
+        workout_id: z
+          .string()
+          .optional()
+          .describe(
+            "Workout to analyze as the current session (default: the most recent workout)",
+          ),
+        history_depth: z
+          .number()
+          .int()
+          .min(1)
+          .max(20)
+          .optional()
+          .describe(
+            "Prior occurrences to return per exercise (default 1). When >1, each exercise gets an `occurrences` array (current + priors, most recent first).",
+          )
+          .default(1),
+        max_pages: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe(
+            "Max workout pages to scan (~10 workouts/page). Default 20; raise for deep history.",
+          )
+          .default(20),
+      },
+      async ({ workout_id, history_depth, max_pages }) => {
+        try {
+          // Page through workouts (pageSize max 10), capped for safety. We need
+          // enough history to find each exercise's previous occurrence.
+          const MAX_PAGES = max_pages;
+          const pageSize = 10;
+          const workouts: any[] = [];
+          let page = 1;
+          let pageCount = 1;
+          let scannedAllPages = true;
+
+          while (page <= pageCount) {
+            if (page > MAX_PAGES) {
+              scannedAllPages = false;
+              break;
+            }
+            let result: any;
+            try {
+              result = await this.client.getWorkouts({ page, pageSize });
+            } catch (error) {
+              if (isNotFoundError(error)) break;
+              throw error;
+            }
+            workouts.push(...(result.workouts ?? []));
+            pageCount = result.page_count ?? page;
+            page++;
+          }
+
+          // Resolve the "current" session.
+          let current: any;
+          if (workout_id) {
+            current = workouts.find((w) => w.id === workout_id);
+            if (!current) {
+              try {
+                current = await this.client.getWorkout(workout_id);
+              } catch (error) {
+                if (isNotFoundError(error)) {
+                  return {
+                    content: [
+                      {
+                        type: "text",
+                        text: `No workout found with ID ${workout_id}`,
+                      },
+                    ],
+                    structuredContent: {
+                      session: null,
+                      exercises: [],
+                      scanned_workouts: workouts.length,
+                      exercises_without_previous: 0,
+                      truncated: !scannedAllPages,
+                    },
+                  };
+                }
+                throw error;
+              }
+            }
+          } else {
+            current = [...workouts].sort((a, b) => {
+              const da = typeof a.start_time === "string" ? a.start_time : "";
+              const db = typeof b.start_time === "string" ? b.start_time : "";
+              return da < db ? 1 : da > db ? -1 : 0;
+            })[0];
+          }
+
+          if (!current) {
+            return {
+              content: [{ type: "text", text: "No workouts found." }],
+              structuredContent: {
+                session: null,
+                exercises: [],
+                scanned_workouts: workouts.length,
+                exercises_without_previous: 0,
+                truncated: !scannedAllPages,
+              },
+            };
+          }
+
+          const currentStart =
+            typeof current.start_time === "string" ? current.start_time : "";
+          const priors = workouts.filter(
+            (w) =>
+              w.id !== current.id &&
+              (typeof w.start_time === "string" ? w.start_time : "") <
+                currentStart,
+          );
+
+          const summary = analyzeProgressionDeltas(current, priors, {
+            scannedWorkouts: workouts.length,
+            truncated: !scannedAllPages,
+            historyDepth: history_depth,
+          });
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: formatProgressionDeltas(summary),
+              },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,
+              },
+            ],
+            structuredContent: summary,
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "get_window_progression",
+      {
+        weeks: z
+          .number()
+          .int()
+          .min(1)
+          .max(52)
+          .optional()
+          .describe("Window of recent weeks to review (1-52)")
+          .default(1),
+        history_depth: z
+          .number()
+          .int()
+          .min(1)
+          .max(20)
+          .optional()
+          .describe(
+            "Prior occurrences to return per exercise (default 1). When >1, each exercise gets an `occurrences` array (current + priors, most recent first).",
+          )
+          .default(1),
+        max_pages: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe(
+            "Max workout pages to scan (~10 workouts/page). Default 20; raise for deep history.",
+          )
+          .default(20),
+      },
+      async ({ weeks, history_depth, max_pages }) => {
+        try {
+          const since = new Date(Date.now() - weeks * 7 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10);
+
+          // Page through workouts (pageSize max 10), capped for safety. We need
+          // history beyond the window to resolve each exercise's previous
+          // occurrence.
+          const MAX_PAGES = max_pages;
+          const pageSize = 10;
+          const workouts: any[] = [];
+          let page = 1;
+          let pageCount = 1;
+          let scannedAllPages = true;
+
+          while (page <= pageCount) {
+            if (page > MAX_PAGES) {
+              scannedAllPages = false;
+              break;
+            }
+            let result: any;
+            try {
+              result = await this.client.getWorkouts({ page, pageSize });
+            } catch (error) {
+              if (isNotFoundError(error)) break;
+              throw error;
+            }
+            workouts.push(...(result.workouts ?? []));
+            pageCount = result.page_count ?? page;
+            page++;
+          }
+
+          const summary = analyzeWindowProgression(workouts, since, weeks, {
+            scannedWorkouts: workouts.length,
+            truncated: !scannedAllPages,
+            historyDepth: history_depth,
+          });
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: formatWindowProgression(summary),
+              },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,
+              },
+            ],
+            structuredContent: summary,
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "get_personal_records",
+      {
+        exercise_template_id: z
+          .string()
+          .optional()
+          .describe("Restrict to a single exercise template (default: all exercises)"),
+        max_pages: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe(
+            "Max workout pages to scan (~10 workouts/page). Default 20; raise so records aren't limited to the recent window.",
+          )
+          .default(20),
+      },
+      async ({ exercise_template_id, max_pages }) => {
+        try {
+          const MAX_PAGES = max_pages;
+          const pageSize = 10;
+          const workouts: any[] = [];
+          let page = 1;
+          let pageCount = 1;
+          let scannedAllPages = true;
+          while (page <= pageCount) {
+            if (page > MAX_PAGES) {
+              scannedAllPages = false;
+              break;
+            }
+            let result: any;
+            try {
+              result = await this.client.getWorkouts({ page, pageSize });
+            } catch (error) {
+              if (isNotFoundError(error)) break;
+              throw error;
+            }
+            workouts.push(...(result.workouts ?? []));
+            pageCount = result.page_count ?? page;
+            page++;
+          }
+
+          const summary = analyzePersonalRecords(workouts, {
+            scannedWorkouts: workouts.length,
+            truncated: !scannedAllPages,
+            ...(exercise_template_id ? { templateId: exercise_template_id } : {}),
+          });
+
+          return {
+            content: [
+              { type: "text", text: formatPersonalRecords(summary) },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,
+              },
+            ],
+            structuredContent: summary,
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "compare_workouts",
+      {
+        workout_id_a: z.string().describe("First workout ID"),
+        workout_id_b: z.string().describe("Second workout ID"),
+      },
+      async ({ workout_id_a, workout_id_b }) => {
+        try {
+          const [a, b] = await Promise.all([
+            this.client.getWorkout(workout_id_a),
+            this.client.getWorkout(workout_id_b),
+          ]);
+
+          const comparison = compareWorkouts(a, b);
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Comparison ${comparison.a.date} vs ${comparison.b.date}: tonnage ${comparison.a.tonnage_kg} vs ${comparison.b.tonnage_kg}kg (Δ ${comparison.delta.tonnage_kg}); effective sets ${comparison.a.effective_sets} vs ${comparison.b.effective_sets}; exercises in both ${comparison.exercises.in_both.length}, only A ${comparison.exercises.only_in_a.length}, only B ${comparison.exercises.only_in_b.length}.`,
+              },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(comparison, null, 2)}`,
+              },
+            ],
+            structuredContent: comparison,
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "get_previous_routine_instance",
+      {
+        routine_id: z.string().describe("The routine ID to find instances of"),
+        before_workout_id: z
+          .string()
+          .optional()
+          .describe(
+            "Anchor instance; returns the instance before it (default: the most recent instance)",
+          ),
+        max_pages: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe(
+            "Max workout pages to scan (~10 workouts/page). Default 20; raise for deep history.",
+          )
+          .default(20),
+      },
+      async ({ routine_id, before_workout_id, max_pages }) => {
+        try {
+          const MAX_PAGES = max_pages;
+          const pageSize = 10;
+          const workouts: any[] = [];
+          let page = 1;
+          let pageCount = 1;
+          let scannedAllPages = true;
+          while (page <= pageCount) {
+            if (page > MAX_PAGES) {
+              scannedAllPages = false;
+              break;
+            }
+            let result: any;
+            try {
+              result = await this.client.getWorkouts({ page, pageSize });
+            } catch (error) {
+              if (isNotFoundError(error)) break;
+              throw error;
+            }
+            workouts.push(...(result.workouts ?? []));
+            pageCount = result.page_count ?? page;
+            page++;
+          }
+
+          const summary = findPreviousRoutineInstance(workouts, routine_id, {
+            scannedWorkouts: workouts.length,
+            truncated: !scannedAllPages,
+            ...(before_workout_id ? { beforeWorkoutId: before_workout_id } : {}),
+          });
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Routine ${routine_id}: ${summary.total_instances} instance(s) found. Anchor: ${summary.anchor?.workout_id ?? "none"} (${summary.anchor?.date ?? "-"}). Previous: ${summary.previous?.workout_id ?? "none"} (${summary.previous?.date ?? "-"}).`,
+              },
+              {
+                type: "text",
+                text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,
+              },
+            ],
+            structuredContent: summary,
+          };
+        } catch (error) {
+          return handleError(error);
+        }
+      },
+    );
+
+    this.server.tool(
+      "get_muscle_balance",
+      {
+        weeks: z
+          .number()
+          .int()
+          .min(1)
+          .max(52)
+          .optional()
+          .describe("Number of recent weeks to include (1-52)")
+          .default(4),
+        include_secondary: z
+          .boolean()
+          .optional()
+          .describe(
+            "When true, also returns a separate by_muscle_group_secondary block (sets/volume where the muscle is a secondary mover). Never summed into primary.",
+          )
+          .default(false),
+        max_pages: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe(
+            "Max workout pages to scan (~10 workouts/page). Default 20; raise for deep history.",
+          )
+          .default(20),
+      },
+      async ({ weeks, include_secondary, max_pages }) => {
+        try {
+          const since = new Date(Date.now() - weeks * 7 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10);
+
+          // Catalog maps: template_id -> primary / secondary muscle groups
+          // (catalog is cached per session).
+          const catalog = await this.client.getAllExerciseTemplates();
+          const muscleGroupByTemplate: Record<string, string> = {};
+          const secondaryByTemplate: Record<string, string[]> = {};
+          for (const template of catalog) {
+            const id = (template as any)?.id;
+            if (typeof id !== "string") continue;
+            if (typeof (template as any)?.primary_muscle_group === "string") {
+              muscleGroupByTemplate[id] = (template as any).primary_muscle_group;
+            }
+            if (Array.isArray((template as any)?.secondary_muscle_groups)) {
+              secondaryByTemplate[id] = (
+                template as any
+              ).secondary_muscle_groups.filter(
+                (m: unknown) => typeof m === "string",
+              );
+            }
+          }
+
+          const MAX_PAGES = max_pages;
+          const pageSize = 10;
+          const workouts: any[] = [];
+          let page = 1;
+          let pageCount = 1;
+          let scannedAllPages = true;
+          while (page <= pageCount) {
+            if (page > MAX_PAGES) {
+              scannedAllPages = false;
+              break;
+            }
+            let result: any;
+            try {
+              result = await this.client.getWorkouts({ page, pageSize });
+            } catch (error) {
+              if (isNotFoundError(error)) break;
+              throw error;
+            }
+            workouts.push(...(result.workouts ?? []));
+            pageCount = result.page_count ?? page;
+            page++;
+          }
+
+          const summary = analyzeMuscleBalance(
+            workouts,
+            muscleGroupByTemplate,
+            since,
+            {
+              truncated: !scannedAllPages,
+              ...(include_secondary ? { secondaryByTemplate } : {}),
+            },
+          );
+
+          const rows =
+            summary.by_muscle_group
+              .map(
+                (g) =>
+                  `${g.muscle_group}: ${g.effective_sets} sets, ${g.total_volume_kg}kg, ${g.exercise_count} exercise(s)`,
+              )
+              .join("\n") || "No mapped exercises in the window";
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Muscle-group distribution since ${since} (${summary.workouts_counted} workout(s), ${summary.unmapped_exercises} unmapped):`,
+              },
+              { type: "text", text: rows },
               {
                 type: "text",
                 text: `\n\nFull data:\n${JSON.stringify(summary, null, 2)}`,

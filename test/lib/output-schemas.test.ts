@@ -8,6 +8,12 @@ import {
 import {
 	analyzeBodyProgress,
 	analyzeTrainingSummary,
+	analyzeProgressionDeltas,
+	analyzeWindowProgression,
+	analyzePersonalRecords,
+	compareWorkouts,
+	findPreviousRoutineInstance,
+	analyzeMuscleBalance,
 } from "../../src/lib/analysis.js";
 
 /** Parses a value against a tool's output shape (mirrors the SDK's validation). */
@@ -169,6 +175,144 @@ describe("output-schemas", () => {
 			expect(
 				parseOutput("get_webhook_subscription", { configured: false }).success,
 			).toBe(true);
+		});
+
+		it("get_progression_deltas matches analyzeProgressionDeltas output", () => {
+			const result = analyzeProgressionDeltas(
+				{
+					id: "w_today",
+					start_time: "2024-08-10T10:00:00Z",
+					exercises: [
+						{
+							exercise_template_id: "BENCH",
+							title: "Bench Press",
+							sets: [
+								{ type: "warmup", weight_kg: 60, reps: 10 },
+								{ type: "normal", weight_kg: 100, reps: 5, rpe: 8 },
+							],
+						},
+						{
+							exercise_template_id: "NEW",
+							sets: [{ type: "normal", reps: 12 }],
+						},
+					],
+				},
+				[
+					{
+						id: "w_prev",
+						start_time: "2024-08-05T10:00:00Z",
+						exercises: [
+							{
+								exercise_template_id: "BENCH",
+								sets: [{ type: "normal", weight_kg: 97.5, reps: 5 }],
+							},
+						],
+					},
+				],
+				{ scannedWorkouts: 2, truncated: false },
+			);
+			expect(parseOutput("get_progression_deltas", result).success).toBe(true);
+		});
+
+		it("get_progression_deltas accepts the empty (no session) shape", () => {
+			expect(
+				parseOutput("get_progression_deltas", {
+					session: null,
+					exercises: [],
+					scanned_workouts: 0,
+					exercises_without_previous: 0,
+					truncated: false,
+				}).success,
+			).toBe(true);
+		});
+
+		it("get_window_progression matches analyzeWindowProgression output", () => {
+			const r = analyzeWindowProgression(
+				[
+					{
+						id: "w1",
+						start_time: "2024-08-09T10:00:00Z",
+						exercises: [
+							{ exercise_template_id: "BENCH", title: "Bench", sets: [{ type: "normal", weight_kg: 100, reps: 5, rpe: 8 }] },
+						],
+					},
+					{
+						id: "w0",
+						start_time: "2024-08-01T10:00:00Z",
+						exercises: [
+							{ exercise_template_id: "BENCH", sets: [{ type: "normal", weight_kg: 97.5, reps: 5 }] },
+						],
+					},
+				],
+				"2024-08-05",
+				1,
+				{ scannedWorkouts: 2, truncated: false, historyDepth: 2 },
+			);
+			expect(parseOutput("get_window_progression", r).success).toBe(true);
+		});
+
+		it("get_window_progression accepts the empty-window shape", () => {
+			const r = analyzeWindowProgression([], "2024-08-05", 1, {
+				scannedWorkouts: 0,
+				truncated: false,
+			});
+			expect(parseOutput("get_window_progression", r).success).toBe(true);
+		});
+
+		it("get_personal_records", () => {
+			const r = analyzePersonalRecords(
+				[
+					{
+						id: "w1",
+						start_time: "2024-08-01T10:00:00Z",
+						exercises: [
+							{ exercise_template_id: "BENCH", title: "Bench", sets: [{ type: "normal", weight_kg: 100, reps: 5 }] },
+							{ exercise_template_id: "PLANK", sets: [{ type: "normal", reps: 60 }] },
+						],
+					},
+				],
+				{ scannedWorkouts: 1, truncated: false },
+			);
+			expect(parseOutput("get_personal_records", r).success).toBe(true);
+		});
+
+		it("compare_workouts", () => {
+			const r = compareWorkouts(
+				{
+					id: "A",
+					start_time: "2024-08-10T10:00:00Z",
+					end_time: "2024-08-10T11:00:00Z",
+					exercises: [{ exercise_template_id: "BENCH", title: "Bench", sets: [{ type: "normal", weight_kg: 100, reps: 5 }] }],
+				},
+				{
+					id: "B",
+					start_time: "2024-08-03T10:00:00Z",
+					exercises: [{ exercise_template_id: "SQUAT", sets: [{ type: "normal", weight_kg: 140, reps: 5 }] }],
+				},
+			);
+			expect(parseOutput("compare_workouts", r).success).toBe(true);
+		});
+
+		it("get_previous_routine_instance", () => {
+			const r = findPreviousRoutineInstance(
+				[
+					{ id: "w1", routine_id: "R1", start_time: "2024-08-10T10:00:00Z" },
+					{ id: "w2", routine_id: "R1", start_time: "2024-08-03T10:00:00Z" },
+				],
+				"R1",
+				{ scannedWorkouts: 2, truncated: false },
+			);
+			expect(parseOutput("get_previous_routine_instance", r).success).toBe(true);
+		});
+
+		it("get_muscle_balance", () => {
+			const r = analyzeMuscleBalance(
+				[{ start_time: "2024-08-10T10:00:00Z", exercises: [{ exercise_template_id: "BENCH", sets: [{ type: "normal", weight_kg: 100, reps: 5 }] }] }],
+				{ BENCH: "chest" },
+				"2024-08-01",
+				{ truncated: false },
+			);
+			expect(parseOutput("get_muscle_balance", r).success).toBe(true);
 		});
 	});
 
